@@ -1,5 +1,5 @@
 use super::{counted, Cell, Grid, View};
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, Write};
 
 /// Query Explain's text of a pipeline. Firestore documents neither the format nor its stability,
 /// so the text is shown as it comes, coloured line by line, and a line this does not recognise is
@@ -23,26 +23,6 @@ impl QueryPlan {
         Self { text }
     }
 
-    pub fn table_scans(&self) -> Vec<&str> {
-        let mut in_table_scan = false;
-        let mut sources = Vec::new();
-        for line in self.tree_lines() {
-            match line {
-                PlanLine::Node(PlanNode { name, .. }) => in_table_scan = name == TABLE_SCAN_NODE,
-                PlanLine::Property(PlanProperty {
-                    key: "source",
-                    value,
-                    ..
-                }) if in_table_scan => {
-                    sources.push(value);
-                    in_table_scan = false;
-                }
-                _ => {}
-            }
-        }
-        sources
-    }
-
     pub fn stats(&self) -> ExecutionStats {
         let mut stats = ExecutionStats::default();
         let mut section = "";
@@ -63,14 +43,6 @@ impl QueryPlan {
         }
         stats
     }
-
-    fn tree_lines(&self) -> impl Iterator<Item = PlanLine<'_>> {
-        self.text
-            .lines()
-            .skip_while(|line| *line != "Tree:")
-            .skip(1)
-            .map(PlanLine::from)
-    }
 }
 
 impl Grid {
@@ -87,29 +59,41 @@ enum PlanLine<'a> {
     Other(PlanText<'a>),
 }
 
+/// The indentation and tree-drawing characters that start a line. Firestore draws the verticals
+/// with `|`, shown as `│` to join the `└──` corners.
+struct TreePrefix<'a>(&'a str);
+
+impl Display for TreePrefix<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.0
+            .chars()
+            .try_for_each(|c| f.write_char(if c == '|' { '│' } else { c }))
+    }
+}
+
 /// A `• Name rest` line, a node of the tree.
 struct PlanNode<'a> {
-    prefix: &'a str,
+    prefix: TreePrefix<'a>,
     name: &'a str,
     rest: &'a str,
 }
 
 /// A `key: value` line of a node.
 struct PlanProperty<'a> {
-    prefix: &'a str,
+    prefix: TreePrefix<'a>,
     key: &'a str,
     value: &'a str,
 }
 
 struct PlanText<'a> {
-    prefix: &'a str,
+    prefix: TreePrefix<'a>,
     text: &'a str,
 }
 
 impl<'a> From<&'a str> for PlanLine<'a> {
     fn from(line: &'a str) -> Self {
         let text = line.trim_start_matches([' ', '|', '│', '└', '├', '─']);
-        let prefix = &line[..line.len() - text.len()];
+        let prefix = TreePrefix(&line[..line.len() - text.len()]);
         if let Some(node) = text.strip_prefix("• ") {
             let (name, rest) = node.split_at(node.find(' ').unwrap_or(node.len()));
             return Self::Node(PlanNode { prefix, name, rest });
@@ -130,6 +114,8 @@ impl View<'_> {
         let mut out = String::new();
         let mut in_tree = false;
         let mut in_node_execution = false;
+        let mut in_table_scan = false;
+        let mut table_scans = Vec::new();
         for line in plan.text.lines() {
             if !line.starts_with(' ') && line.ends_with(':') && !line.starts_with(['|', '└', '├'])
             {
@@ -143,33 +129,40 @@ impl View<'_> {
                 out.push('\n');
                 continue;
             }
-            let rendered = match PlanLine::from(line) {
+            let line = PlanLine::from(line);
+            if let PlanLine::Property(PlanProperty {
+                key: "source",
+                value,
+                ..
+            }) = &line
+            {
+                if in_table_scan {
+                    table_scans.push(*value);
+                    in_table_scan = false;
+                }
+            }
+            let rendered = match line {
                 PlanLine::Node(PlanNode { prefix, name, rest }) => {
                     in_node_execution = false;
-                    let style = if name == TABLE_SCAN_NODE {
+                    in_table_scan = name == TABLE_SCAN_NODE;
+                    let style = if in_table_scan {
                         &theme.warning
                     } else {
                         &theme.plan_node
                     };
-                    format!(
-                        "{}{}{}",
-                        tree_prefix(prefix),
-                        style.apply_to(format!("• {name}")),
-                        rest
-                    )
+                    format!("{prefix}{}{rest}", style.apply_to(format!("• {name}")))
                 }
                 PlanLine::Other(PlanText { prefix, text }) if text == "Execution:" => {
                     in_node_execution = true;
-                    format!("{}{}", tree_prefix(prefix), theme.muted.apply_to(text))
+                    format!("{prefix}{}", theme.muted.apply_to(text))
                 }
                 PlanLine::Other(PlanText { prefix, text: "" }) => {
                     in_node_execution = false;
-                    tree_prefix(prefix).trim_end().to_string()
+                    prefix.to_string().trim_end().to_string()
                 }
                 PlanLine::Property(PlanProperty { prefix, key, value }) if in_node_execution => {
                     format!(
-                        "{}{}",
-                        tree_prefix(prefix),
+                        "{prefix}{}",
                         theme.muted.apply_to(format!("{key}: {value}"))
                     )
                 }
@@ -178,24 +171,22 @@ impl View<'_> {
                     key: "index",
                     value,
                 }) => format!(
-                    "{}{} {}",
-                    tree_prefix(prefix),
+                    "{prefix}{} {}",
                     theme.muted.apply_to("index:"),
                     theme.success.apply_to(value)
                 ),
-                PlanLine::Property(PlanProperty { prefix, key, value }) => format!(
-                    "{}{} {value}",
-                    tree_prefix(prefix),
-                    theme.muted.apply_to(format!("{key}:"))
-                ),
-                PlanLine::Other(PlanText { prefix, text }) => {
-                    format!("{}{text}", tree_prefix(prefix))
+                PlanLine::Property(PlanProperty { prefix, key, value }) => {
+                    format!(
+                        "{prefix}{} {value}",
+                        theme.muted.apply_to(format!("{key}:"))
+                    )
                 }
+                PlanLine::Other(PlanText { prefix, text }) => format!("{prefix}{text}"),
             };
             out.push_str(&rendered);
             out.push('\n');
         }
-        for source in plan.table_scans() {
+        for source in table_scans {
             out.push_str(&format!(
                 "{} a table scan reads every document of {source}; an index on the fields the statement filters or sorts on avoids it\n",
                 theme.warning.apply_to("Warning:")
@@ -212,11 +203,6 @@ impl View<'_> {
             None => line.to_string(),
         }
     }
-}
-
-/// Firestore draws the tree's verticals with `|`; shown as `│` to join its `└──` corners.
-fn tree_prefix(prefix: &str) -> String {
-    prefix.replace('|', "│")
 }
 
 impl Display for ExecutionStats {
@@ -316,9 +302,6 @@ Tree:
 
     #[test]
     fn an_indexed_plan_has_no_table_scan_to_warn_about() {
-        let plan = QueryPlan::new(INDEXED_ANALYZE_PLAN.to_string());
-
-        assert!(plan.table_scans().is_empty());
         assert!(!rendered(INDEXED_ANALYZE_PLAN).contains("Warning:"));
     }
 
