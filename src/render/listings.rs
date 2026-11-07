@@ -6,19 +6,19 @@ use firestore::{
 };
 
 impl Grid {
-    /// The collections `SHOW COLLECTIONS` lists, each with its path from the documents root:
-    /// under `parent`, the path of a document, or at the root.
+    /// The collections `SHOW COLLECTIONS` lists. Under `parent`, the path of a document, each
+    /// comes with its path from the documents root; at the root the path is the ID.
     pub fn collections(collection_ids: &[FirestoreCollectionId], parent: Option<&str>) -> Self {
-        let mut grid = Grid::new(["collection", "path"]);
+        let mut grid = match parent {
+            Some(_) => Grid::new(["collection", "path"]),
+            None => Grid::new(["collection"]),
+        };
         for collection_id in collection_ids {
-            let path = match parent {
-                Some(parent) => format!("{parent}/{collection_id}"),
-                None => collection_id.to_string(),
-            };
-            grid.push_row(vec![
-                Some(Cell::Text(collection_id.to_string())),
-                Some(Cell::Text(path)),
-            ]);
+            let mut row = vec![Some(Cell::Text(collection_id.to_string()))];
+            if let Some(parent) = parent {
+                row.push(Some(Cell::Text(format!("{parent}/{collection_id}"))));
+            }
+            grid.push_row(row);
         }
         grid
     }
@@ -152,17 +152,24 @@ mod tests {
     }
 
     #[test]
-    fn collections_are_listed_with_their_path_from_the_root() {
+    fn collections_under_a_document_carry_their_path_from_the_root() {
         let orders: FirestoreCollectionId = "orders".parse().expect("a collection ID");
 
         assert_eq!(
-            table(&Grid::collections(&[orders], Some("users/alice"))),
+            table(&Grid::collections(
+                std::slice::from_ref(&orders),
+                Some("users/alice")
+            )),
             r#"╭────────────┬────────────────────╮
 │ collection ┆ path               │
 ╞════════════╪════════════════════╡
 │ orders     ┆ users/alice/orders │
 ╰────────────┴────────────────────╯
 "#
+        );
+        assert_eq!(
+            Grid::collections(std::slice::from_ref(&orders), None).columns(),
+            ["collection"]
         );
     }
 

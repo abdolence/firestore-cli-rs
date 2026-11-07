@@ -89,7 +89,13 @@ const SQL_KEYWORDS: &[&str] = &[
 
 pub async fn run(mut session: Session) -> FsqResult<()> {
     session.greet()?;
-    session.hint("Type \\? for help and \\q to quit; a statement ends with `;`.")?;
+    session.output.notice(
+        &session
+            .theme
+            .muted
+            .apply_to("Type \\? for help and \\q to quit; a statement ends with `;`.")
+            .to_string(),
+    )?;
     session.load_collections().await;
     let mut editor = Reedline::create()
         .with_validator(Box::new(StatementValidator))

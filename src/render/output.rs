@@ -6,8 +6,8 @@ use std::process::{Command, Stdio};
 
 const DEFAULT_PAGER: &str = "less -RFX";
 
-/// Where results go: stdout, through a pager when stdout is a terminal and a result does not fit
-/// on it, and notices to stderr.
+/// Where results go: stdout, through a pager when stdout is a terminal and a result is taller than
+/// it, and notices to stderr.
 pub struct Output {
     stdout: Term,
     stderr: Term,
@@ -28,12 +28,10 @@ impl Output {
         Theme::new(self.is_terminal && console::colors_enabled())
     }
 
-    /// The terminal's width, `None` when stdout is not a terminal.
     pub fn width(&self) -> Option<usize> {
         self.is_terminal.then(|| usize::from(self.stdout.size().1))
     }
 
-    /// The terminal's height, `None` when stdout is not a terminal.
     pub fn height(&self) -> Option<usize> {
         self.is_terminal.then(|| usize::from(self.stdout.size().0))
     }
@@ -42,7 +40,7 @@ impl Output {
         if text.is_empty() {
             return Ok(());
         }
-        if self.is_terminal && !self.fits(text) {
+        if self.is_terminal && !self.fits_height(text) {
             if let Some(command) = pager_command() {
                 match run_pager(&command, text) {
                     // No such pager installed, as `less` on Windows: print as without one.
@@ -65,12 +63,24 @@ impl Output {
         Ok(())
     }
 
+    /// An error on stderr as `error: ..`, and Ctrl-C as `Interrupted.`
+    pub fn report(&self, error: &FsqError) {
+        let theme = self.theme();
+        let text = match error {
+            FsqError::Interrupted => theme.muted.apply_to("Interrupted.").to_string(),
+            error => format!("{} {error}", theme.error.apply_to("error:")),
+        };
+        if let Err(write_error) = self.notice(&text) {
+            tracing::warn!(%write_error, %error, "cannot write to stderr");
+        }
+    }
+
     /// Asks whether to show the next page of rows: Enter or space for yes, anything else for no.
     pub fn ask_for_more(&self, theme: &Theme) -> FsqResult<bool> {
         self.stdout.write_str(
             &theme
                 .muted
-                .apply_to("-- more: Enter for the next page, q to stop --")
+                .apply_to("-- more: Enter or space for the next page, any other key to stop --")
                 .to_string(),
         )?;
         let key = self.stdout.read_key()?;
@@ -78,16 +88,8 @@ impl Output {
         Ok(matches!(key, Key::Enter | Key::Char(' ')))
     }
 
-    fn fits(&self, text: &str) -> bool {
-        let (rows, columns) = self.stdout.size();
-        let mut lines = 0;
-        for line in text.lines() {
-            if console::measure_text_width(line) > usize::from(columns) {
-                return false;
-            }
-            lines += 1;
-        }
-        lines < usize::from(rows)
+    fn fits_height(&self, text: &str) -> bool {
+        text.lines().count() < usize::from(self.stdout.size().0)
     }
 }
 

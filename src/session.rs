@@ -48,8 +48,8 @@ pub struct Session {
     pub connection: Connection,
     pub settings: Settings,
     pub vocabulary: SharedVocabulary,
-    output: Output,
-    theme: Theme,
+    pub output: Output,
+    pub theme: Theme,
     interaction: Interaction,
 }
 
@@ -181,11 +181,6 @@ impl Session {
         }
     }
 
-    pub fn hint(&self, text: &str) -> FsqResult<()> {
-        self.output
-            .notice(&self.theme.muted.apply_to(text).to_string())
-    }
-
     /// Lists the root collections for completion, quietly: completion works without them.
     pub async fn load_collections(&self) {
         match self
@@ -213,13 +208,7 @@ impl Session {
     }
 
     pub fn report(&self, error: &FsqError) {
-        let text = match error {
-            FsqError::Interrupted => self.theme.muted.apply_to("Interrupted.").to_string(),
-            error => format!("{} {error}", self.theme.error.apply_to("error:")),
-        };
-        if let Err(error) = self.output.notice(&text) {
-            tracing::warn!(%error, "cannot write to stderr");
-        }
+        self.output.report(error);
     }
 
     fn remember_fields(&self, grid: &Grid) {

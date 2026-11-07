@@ -15,7 +15,7 @@ use connection::Connection;
 use describe::DescribeTarget;
 use errors::{FsqError, FsqResult, ReadScript};
 use meta::Switch;
-use render::ExpandedMode;
+use render::{ExpandedMode, Output};
 use session::{Interaction, Session, Settings};
 use std::io::{IsTerminal, Read};
 use std::process::ExitCode;
@@ -40,13 +40,7 @@ async fn main() -> ExitCode {
         Err(FsqError::Interrupted) => ExitCode::from(INTERRUPTED_EXIT_CODE),
         Err(error) if error.is_broken_pipe() => ExitCode::SUCCESS,
         Err(error) => {
-            let message = format!(
-                "{} {error}",
-                console::style("error:").red().bold().for_stderr()
-            );
-            if let Err(write_error) = console::Term::stderr().write_line(&message) {
-                tracing::warn!(%write_error, %error, "cannot write the error to stderr");
-            }
+            Output::detect().report(&error);
             ExitCode::FAILURE
         }
     }

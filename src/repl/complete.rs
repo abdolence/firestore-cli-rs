@@ -7,7 +7,6 @@ const META_COMMANDS: &[&str] = &[
     "\\?", "\\c", "\\d", "\\l", "\\q", "\\timing", "\\wait", "\\x",
 ];
 
-/// The keywords after which a statement names a collection.
 const COLLECTION_KEYWORDS: &[&str] = &["FROM", "JOIN", "INTO", "UPDATE", "COLLECTION", "ON", "\\D"];
 
 pub struct SqlCompleter {

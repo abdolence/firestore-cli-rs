@@ -74,7 +74,6 @@ pub(super) struct RowPages<'b> {
 
 pub(super) struct RowPage {
     pub documents: Vec<FirestoreDocument>,
-    /// Whether another document follows this page.
     pub more: bool,
 }
 
