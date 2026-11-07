@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 const INDEX_WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// The collection group whose index build a statement starts, for `\wait` to wait on.
-fn index_build(statement: &FirestoreSqlStatement) -> Option<&FirestoreCollectionId> {
+fn waited_collection_group(statement: &FirestoreSqlStatement) -> Option<&FirestoreCollectionId> {
     match statement {
         FirestoreSqlStatement::CreateIndex(create) => Some(&create.definition.collection_group),
         FirestoreSqlStatement::AlterCollection(update) => Some(&update.collection_group),
@@ -29,7 +29,8 @@ impl Session {
         let statement =
             FirestoreSqlStatement::translate(&db, sql, &FirestoreSqlParameters::new(), &options)?;
         let mut builder = db.fluent().sql(sql).options(options);
-        let waits_for = index_build(&statement).filter(|_| self.settings.wait == Switch::On);
+        let waits_for =
+            waited_collection_group(&statement).filter(|_| self.settings.wait == Switch::On);
         if waits_for.is_some() {
             builder = builder.wait_until_ready(INDEX_WAIT_TIMEOUT);
         }
