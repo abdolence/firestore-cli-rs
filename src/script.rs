@@ -110,6 +110,20 @@ mod tests {
     }
 
     #[test]
+    fn a_quote_in_a_meta_command_line_does_not_open_a_string() {
+        let script = Script::parse("\\d it's\nSELECT 1; SELECT 2;");
+
+        assert_eq!(
+            script.into_inputs(),
+            vec![
+                Input::Meta("\\d it's".to_string()),
+                statement("SELECT 1"),
+                statement("SELECT 2"),
+            ]
+        );
+    }
+
+    #[test]
     fn a_comment_after_the_last_semicolon_is_not_a_statement() {
         let script = Script::parse("SELECT 1; /* done */");
 
