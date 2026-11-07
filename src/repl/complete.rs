@@ -4,7 +4,7 @@ use crate::session::SharedVocabulary;
 use firestore::FirestoreSqlFieldName;
 use reedline::{Completer, Span, Suggestion};
 
-const COLLECTION_KEYWORDS: &[&str] = &["FROM", "JOIN", "INTO", "UPDATE", "COLLECTION", "ON", "\\D"];
+const COLLECTION_KEYWORDS: &[&str] = &["FROM", "JOIN", "INTO", "UPDATE", "COLLECTION", "\\D"];
 
 pub struct SqlCompleter {
     vocabulary: SharedVocabulary,
@@ -31,7 +31,10 @@ impl SqlCompleter {
         let Ok(vocabulary) = self.vocabulary.lock() else {
             return Vec::new();
         };
-        if COLLECTION_KEYWORDS.contains(&previous.as_str()) {
+        // After the ON of a join a field belongs; after that of CREATE INDEX a collection does.
+        let creates_index =
+            previous == "ON" && line.trim_start().to_ascii_uppercase().starts_with("CREATE");
+        if creates_index || COLLECTION_KEYWORDS.contains(&previous.as_str()) {
             return vocabulary
                 .collections
                 .iter()
@@ -110,5 +113,16 @@ mod tests {
         assert_eq!(completions("SELECT title FR"), vec!["FROM"]);
         assert_eq!(completions("\\ti"), vec!["\\timing"]);
         assert_eq!(completions("\\d bo"), vec!["books"]);
+    }
+
+    #[test]
+    fn on_completes_collections_only_after_create_index() {
+        assert_eq!(
+            completions("CREATE INDEX ON "),
+            vec!["books", "`order-lines`"]
+        );
+        let after_join = completions("SELECT * FROM books JOIN authors ON ");
+        assert!(!after_join.contains(&"books".to_string()));
+        assert!(after_join.contains(&"title".to_string()));
     }
 }

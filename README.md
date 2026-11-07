@@ -68,10 +68,10 @@ A statement ends with `;` and can span several lines. A line that starts with `\
 | `\?` | lists the meta-commands |
 | `\q` | quits, as Ctrl-D does |
 
-Tab completes a collection after `FROM`, `JOIN`, `INTO`, `UPDATE` and `ON`, a meta-command at the start of a line,
-and otherwise a keyword or a field of the rows and descriptions shown so far. Ctrl-C stops a running statement;
-a write that reached Firestore before it may still apply. The history is kept in the `fsq` directory of the
-platform's data directory, such as `~/.local/share/fsq` on Linux.
+Tab completes a collection after `FROM`, `JOIN`, `INTO`, `UPDATE`, `COLLECTION`, `\d` and the `ON` of
+`CREATE INDEX`, a meta-command at the start of a line, and otherwise a keyword or a field of the rows and descriptions
+shown so far. Ctrl-C stops a running statement; a write that reached Firestore before it may still apply. The history
+is kept in the `fsq` directory of the platform's data directory, such as `~/.local/share/fsq` on Linux.
 
 ## Results
 
@@ -94,11 +94,11 @@ my-project/my-database (enterprise)> SELECT __name__, title, address, tags, publ
 * an empty cell is a field the document lacks, and `NULL` is a field that holds null. Firestore keeps the two
   apart, see the [semantics](https://firestore-rust.abdolence.dev/editions/semantics.html) of pipelines;
 * a statement without `LIMIT` shows a page that fits the terminal and asks before the next one. A statement with
-  `LIMIT` shows all its rows;
+  `LIMIT` shows all its rows, and `EXPLAIN` is never paged, since its plan arrives with the last row;
 * the footer shows the rows, the time the statement took and its notes, such as `more rows remain`.
 
 `\x` shows each document as a block, with nested values pretty-printed, and `\x auto` does so only for a table wider
-than the terminal. A result taller or wider than the terminal goes through `$PAGER`, or `less -RFX` when it is
+than the terminal. A result taller than the terminal goes through `$PAGER`, or `less -RFX` when it is
 unset; an empty `PAGER` turns the pager off.
 
 ## Writes and index statements
@@ -140,8 +140,8 @@ fsq -p my-project -d my-database describe books --sample 100
 
 `\d books` in the REPL lists the same: each field path of a sample of documents, nested maps included, with the
 types it holds, the share of the sampled documents that have it and an example value. The sample is 500 documents
-unless `--sample` sets another size. On the Enterprise edition it is a random sample, and on the Standard edition
-the first documents by ID.
+unless `--sample` sets another size. On an Enterprise edition database it is a random sample. On a Standard edition
+database, on the emulator and when the edition cannot be read, it is the first documents by ID.
 
 ```
 my-project/my-database (enterprise)> \d books
