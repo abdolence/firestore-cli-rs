@@ -1,0 +1,237 @@
+mod rows;
+mod statement;
+
+use crate::connection::{Connection, DatabaseEdition, EditionStatus};
+use crate::describe::{DescribeTarget, Description};
+use crate::errors::{FsqError, FsqResult};
+use crate::meta::{MetaCommand, Switch, META_HELP};
+use crate::render::{
+    Counted, ExpandedMode, Footer, FooterNote, Grid, Output, OutputFormat, Theme, View, NAME_COLUMN,
+};
+use crate::script::{Input, Script};
+use firestore::{FirestoreCollectionId, FirestoreSqlOutcome};
+use std::collections::BTreeSet;
+use std::future::Future;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+pub struct Settings {
+    pub format: OutputFormat,
+    pub expanded: ExpandedMode,
+    pub timing: Switch,
+    pub wait: Switch,
+}
+
+/// Whether a person is at the keyboard, who can be asked for the next page of rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Interaction {
+    Repl,
+    Script,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flow {
+    Continue,
+    Quit,
+}
+
+/// The names the REPL completes: the collections listed so far and the fields seen in results.
+#[derive(Debug, Default)]
+pub struct Vocabulary {
+    pub collections: BTreeSet<String>,
+    pub fields: BTreeSet<String>,
+}
+
+pub type SharedVocabulary = Arc<Mutex<Vocabulary>>;
+
+pub struct Session {
+    pub connection: Connection,
+    pub settings: Settings,
+    pub vocabulary: SharedVocabulary,
+    output: Output,
+    theme: Theme,
+    interaction: Interaction,
+}
+
+impl Session {
+    pub fn new(connection: Connection, settings: Settings, interaction: Interaction) -> Self {
+        let output = Output::detect();
+        Self {
+            connection,
+            settings,
+            vocabulary: SharedVocabulary::default(),
+            theme: output.theme(),
+            output,
+            interaction,
+        }
+    }
+
+    fn view(&self) -> View<'_> {
+        View {
+            theme: &self.theme,
+            format: self.settings.format,
+            expanded: self.settings.expanded,
+            width: self.output.width(),
+            documents_path: self.connection.db.get_documents_path(),
+        }
+    }
+
+    /// Runs every statement and meta-command of `text` in order, and stops at the first error.
+    pub async fn run_script(&mut self, text: &str) -> FsqResult<()> {
+        for input in Script::parse(text).into_inputs() {
+            if self.run_input(&input).await? == Flow::Quit {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn run_input(&mut self, input: &Input) -> FsqResult<Flow> {
+        match input {
+            Input::Statement(sql) => {
+                self.run_statement(sql).await?;
+                Ok(Flow::Continue)
+            }
+            Input::Meta(line) => self.run_meta(line.parse()?).await,
+        }
+    }
+
+    async fn run_meta(&mut self, command: MetaCommand) -> FsqResult<Flow> {
+        match command {
+            MetaCommand::Quit => return Ok(Flow::Quit),
+            MetaCommand::Help => self.output.print(&format!("{META_HELP}\n"))?,
+            MetaCommand::ListCollections => self.run_statement("SHOW COLLECTIONS").await?,
+            MetaCommand::Describe(target) => self.describe(&target).await?,
+            MetaCommand::Expanded(mode) => {
+                self.settings.expanded = mode.unwrap_or(match self.settings.expanded {
+                    ExpandedMode::Off => ExpandedMode::On,
+                    ExpandedMode::On | ExpandedMode::Auto => ExpandedMode::Off,
+                });
+                self.output
+                    .notice(&format!("Expanded display is {}.", self.settings.expanded))?;
+            }
+            MetaCommand::Connect(database) => {
+                self.connection =
+                    Connection::open(self.connection.project.clone(), database).await?;
+                self.greet()?;
+                if let Ok(mut vocabulary) = self.vocabulary.lock() {
+                    *vocabulary = Vocabulary::default();
+                }
+                if self.interaction == Interaction::Repl {
+                    self.load_collections().await;
+                }
+            }
+            MetaCommand::Timing(switch) => {
+                self.settings.timing = switch.unwrap_or(self.settings.timing.toggled());
+                self.output
+                    .notice(&format!("Timing is {}.", self.settings.timing))?;
+            }
+            MetaCommand::Wait(switch) => {
+                self.settings.wait = switch.unwrap_or(self.settings.wait.toggled());
+                self.output.notice(&format!(
+                    "Waiting for index builds is {}.",
+                    self.settings.wait
+                ))?;
+            }
+        }
+        Ok(Flow::Continue)
+    }
+
+    pub async fn describe(&mut self, target: &DescribeTarget) -> FsqResult<()> {
+        let started = Instant::now();
+        let description = interruptible(Description::sample(&self.connection, target)).await??;
+        if let Ok(mut vocabulary) = self.vocabulary.lock() {
+            vocabulary
+                .fields
+                .extend(description.top_level_fields().iter().cloned());
+        }
+        let documents = description.documents();
+        let grid = description.into_grid();
+        let footer = Footer {
+            count: grid.len(),
+            counted: Counted::FieldPaths,
+            elapsed: started.elapsed(),
+            notes: vec![FooterNote::Sampled { documents }],
+        };
+        let view = self.view();
+        self.output
+            .print(&format!("{}{}", view.grid(&grid), view.footer(&footer)))
+    }
+
+    pub fn greet(&self) -> FsqResult<()> {
+        self.output
+            .notice(&format!("Connected to {}.", self.connection.label()))?;
+        match &self.connection.edition {
+            EditionStatus::Known(DatabaseEdition::Standard) => self.output.notice(
+                &self.theme.warning.apply_to(
+                    "SQL needs an Enterprise edition database, and on this Standard edition database SELECT and the writes fail. \\l, \\d, SHOW COLLECTIONS, SHOW INDEXES and the index statements work on both editions.",
+                ).to_string(),
+            ),
+            EditionStatus::Unreadable(error) => self
+                .output
+                .notice(&format!("The edition of the database could not be read: {error}")),
+            EditionStatus::Known(DatabaseEdition::Enterprise) | EditionStatus::Emulator => Ok(()),
+        }
+    }
+
+    pub fn hint(&self, text: &str) -> FsqResult<()> {
+        self.output
+            .notice(&self.theme.muted.apply_to(text).to_string())
+    }
+
+    /// Lists the root collections for completion, quietly: completion works without them.
+    pub async fn load_collections(&self) {
+        match self
+            .connection
+            .db
+            .fluent()
+            .sql("SHOW COLLECTIONS")
+            .run()
+            .await
+        {
+            Ok(FirestoreSqlOutcome::Collections(collection_ids)) => {
+                self.remember_collections(&collection_ids)
+            }
+            Ok(_) => {}
+            Err(error) => tracing::debug!(%error, "no collections listed for completion"),
+        }
+    }
+
+    fn remember_collections(&self, collection_ids: &[FirestoreCollectionId]) {
+        if let Ok(mut vocabulary) = self.vocabulary.lock() {
+            vocabulary
+                .collections
+                .extend(collection_ids.iter().map(ToString::to_string));
+        }
+    }
+
+    pub fn report(&self, error: &FsqError) {
+        let text = match error {
+            FsqError::Interrupted => self.theme.muted.apply_to("Interrupted.").to_string(),
+            error => format!("{} {error}", self.theme.error.apply_to("error:")),
+        };
+        if let Err(error) = self.output.notice(&text) {
+            tracing::warn!(%error, "cannot write to stderr");
+        }
+    }
+
+    fn remember_fields(&self, grid: &Grid) {
+        if let Ok(mut vocabulary) = self.vocabulary.lock() {
+            vocabulary.fields.extend(
+                grid.columns()
+                    .iter()
+                    .filter(|column| *column != NAME_COLUMN)
+                    .cloned(),
+            );
+        }
+    }
+}
+
+/// Runs `future` until it finishes or Ctrl-C stops it. Dropping a call stops the client's wait
+/// for it, not Firestore's work on it.
+async fn interruptible<F: Future>(future: F) -> FsqResult<F::Output> {
+    tokio::select! {
+        output = future => Ok(output),
+        _ = tokio::signal::ctrl_c() => Err(FsqError::Interrupted),
+    }
+}
