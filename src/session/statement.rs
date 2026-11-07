@@ -1,7 +1,7 @@
 use super::{interruptible, Session};
 use crate::errors::{FsqError, FsqResult};
 use crate::meta::Switch;
-use crate::render::{counted, relative_name, Cell, DurationText, Footer, Grid, OutputFormat};
+use crate::render::{counted, Cell, DurationText, Footer, Grid, OutputFormat};
 use firestore::{
     FirestoreCollectionId, FirestoreExplainOptions, FirestoreIndexState, FirestoreSqlOptions,
     FirestoreSqlOutcome, FirestoreSqlParameters, FirestoreSqlStatement,
@@ -82,11 +82,10 @@ impl Session {
             }
             FirestoreSqlOutcome::Collections(collection_ids) => {
                 let parent = match statement {
-                    FirestoreSqlStatement::ShowCollections(params) => {
-                        params.parent.as_deref().map(|parent| {
-                            relative_name(self.connection.db.get_documents_path(), parent)
-                        })
-                    }
+                    FirestoreSqlStatement::ShowCollections(params) => params
+                        .parent
+                        .as_deref()
+                        .map(|parent| self.connection.db.json().relative_name(parent)),
                     _ => None,
                 };
                 if parent.is_none() {

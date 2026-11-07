@@ -289,8 +289,12 @@ enum CellLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::fixtures::{draft, dune, DOCUMENTS_PATH};
+    use crate::render::fixtures::{draft, dune, string, value, DOCUMENTS_PATH};
     use crate::render::Theme;
+    use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
+    use firestore::gcloud_sdk::google::firestore::v1::{ArrayValue, MapValue};
+    use firestore::gcloud_sdk::prost_types::Timestamp;
+    use std::collections::HashMap;
 
     fn view(theme: &Theme, format: OutputFormat, expanded: ExpandedMode) -> View<'_> {
         View {
@@ -348,6 +352,40 @@ mod tests {
         let lines = view(&theme, OutputFormat::Jsonl, ExpandedMode::Off).grid(&books());
 
         assert_eq!(lines, JSON_LINES);
+    }
+
+    #[test]
+    fn json_writes_infinity_a_fractional_timestamp_and_a_vector_in_the_plain_encoding() {
+        let theme = Theme::new(false);
+        let mut grid = Grid::new(["score", "seen", "embedding"]);
+        grid.push_row(vec![
+            Some(Cell::Value(value(ValueType::DoubleValue(f64::INFINITY)))),
+            Some(Cell::Value(value(ValueType::TimestampValue(Timestamp {
+                seconds: 1_700_000_000,
+                nanos: 500_000_000,
+            })))),
+            Some(Cell::Value(value(ValueType::MapValue(MapValue {
+                fields: HashMap::from([
+                    ("__type__".to_string(), string("__vector__")),
+                    (
+                        "value".to_string(),
+                        value(ValueType::ArrayValue(ArrayValue {
+                            values: vec![
+                                value(ValueType::DoubleValue(1.0)),
+                                value(ValueType::DoubleValue(2.5)),
+                            ],
+                        })),
+                    ),
+                ]),
+            })))),
+        ]);
+
+        let lines = view(&theme, OutputFormat::Jsonl, ExpandedMode::Off).grid(&grid);
+
+        assert_eq!(
+            lines,
+            "{\"score\":\"Infinity\",\"seen\":\"2023-11-14T22:13:20.500Z\",\"embedding\":[1.0,2.5]}\n"
+        );
     }
 
     #[test]

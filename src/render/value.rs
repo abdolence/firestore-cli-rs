@@ -1,9 +1,9 @@
 use super::{counted, View};
-use base64::Engine;
 use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
 use firestore::gcloud_sdk::prost_types::Timestamp;
 use firestore::timestamp_utils::from_timestamp;
+use firestore::FirestoreJsonConverter;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter, Write};
 
@@ -114,7 +114,7 @@ impl View<'_> {
                 .to_string(),
             Some(ValueType::ReferenceValue(name)) => theme
                 .reference
-                .apply_to(relative_name(self.documents_path, name))
+                .apply_to(FirestoreJsonConverter::new(self.documents_path).relative_name(name))
                 .to_string(),
             Some(ValueType::GeoPointValue(point)) => theme
                 .number
@@ -132,59 +132,12 @@ impl View<'_> {
         }
     }
 
-    /// A value as plain JSON: a timestamp as RFC 3339 text, bytes as base64, a reference as its
-    /// relative name and a geo point as its latitude and longitude.
+    /// A value as plain JSON, in the firestore crate's plain encoding.
     pub fn json_value(&self, value: &Value) -> serde_json::Value {
-        use serde_json::Value as Json;
-        match &value.value_type {
-            None | Some(ValueType::NullValue(_)) => Json::Null,
-            Some(ValueType::BooleanValue(flag)) => Json::Bool(*flag),
-            Some(ValueType::IntegerValue(number)) => Json::from(*number),
-            Some(ValueType::DoubleValue(number)) => serde_json::Number::from_f64(*number)
-                .map(Json::Number)
-                .unwrap_or_else(|| Json::String(format!("{number:?}"))),
-            Some(ValueType::TimestampValue(timestamp)) => {
-                Json::String(TimestampText(timestamp).to_string())
-            }
-            Some(ValueType::StringValue(text)) => Json::String(text.clone()),
-            Some(ValueType::BytesValue(bytes)) => {
-                Json::String(base64::engine::general_purpose::STANDARD.encode(bytes))
-            }
-            Some(ValueType::ReferenceValue(name)) => {
-                Json::String(relative_name(self.documents_path, name).to_string())
-            }
-            Some(ValueType::GeoPointValue(point)) => serde_json::json!({
-                "latitude": point.latitude,
-                "longitude": point.longitude,
-            }),
-            Some(ValueType::ArrayValue(array)) => Json::Array(
-                array
-                    .values
-                    .iter()
-                    .map(|element| self.json_value(element))
-                    .collect(),
-            ),
-            Some(ValueType::MapValue(map)) => Json::Object(
-                sorted_keys(&map.fields)
-                    .into_iter()
-                    .map(|key| (key.clone(), self.json_value(&map.fields[key])))
-                    .collect(),
-            ),
-            Some(
-                ValueType::FieldReferenceValue(text) | ValueType::VariableReferenceValue(text),
-            ) => Json::String(text.clone()),
-            Some(ValueType::FunctionValue(function)) => Json::String(function.name.clone()),
-            Some(ValueType::PipelineValue(_)) => Json::String("pipeline".to_string()),
-        }
+        FirestoreJsonConverter::new(self.documents_path)
+            .plain(value)
+            .into_inner()
     }
-}
-
-/// A document or reference name relative to `documents_path`, the documents root of the
-/// database, and the full name for one of another database.
-pub fn relative_name<'n>(documents_path: &str, name: &'n str) -> &'n str {
-    name.strip_prefix(documents_path)
-        .and_then(|rest| rest.strip_prefix('/'))
-        .unwrap_or(name)
 }
 
 struct TimestampText<'a>(&'a Timestamp);

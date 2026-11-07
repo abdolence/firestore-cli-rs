@@ -754,6 +754,7 @@ version = "0.64.0"
 dependencies = [
  "async-trait",
  "backon",
+ "base64 0.23.1",
  "futures",
  "gcloud-sdk",
  "hex",
@@ -775,7 +776,6 @@ dependencies = [
 name = "firestore-cli"
 version = "0.1.0"
 dependencies = [
- "base64 0.23.1",
  "clap",
  "comfy-table",
  "console",

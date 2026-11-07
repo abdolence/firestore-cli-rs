@@ -177,8 +177,11 @@ echo 'SHOW COLLECTIONS; \d books' | fsq -p my-project -d my-database
 * input piped to fsq runs as the REPL runs typed input: a failed statement is reported and the rest still runs, and
   fsq exits with 1 when any failed;
 * `--format json` prints each result as a JSON array of objects, and `--format jsonl` as JSON lines, one object per
-  line. A timestamp is RFC 3339 text, bytes are base64, a reference is its path relative to the database and a geo
-  point is an object with `latitude` and `longitude`. The footers are left out, and notices go to stderr.
+  line. The values use the plain JSON encoding of the firestore crate, which is for display and cannot be read back
+  into the same Firestore types: a timestamp is RFC 3339 text, bytes are base64, a reference is its path relative to
+  the database, a geo point is an object with `latitude` and `longitude`, a vector is an array of numbers, and `NaN`
+  and the infinities are the strings `"NaN"`, `"Infinity"` and `"-Infinity"`. The footers are left out, and notices go
+  to stderr.
 
 ## Licence
 
