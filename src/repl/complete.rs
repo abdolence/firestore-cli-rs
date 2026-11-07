@@ -1,6 +1,6 @@
 use super::SQL_KEYWORDS;
-use crate::script::SqlName;
 use crate::session::SharedVocabulary;
+use firestore::FirestoreSqlFieldName;
 use reedline::{Completer, Span, Suggestion};
 
 const META_COMMANDS: &[&str] = &[
@@ -36,7 +36,7 @@ impl SqlCompleter {
             return vocabulary
                 .collections
                 .iter()
-                .map(|id| SqlName(id).to_string())
+                .map(|id| FirestoreSqlFieldName::from(id.as_str()).to_string())
                 .collect();
         }
         SQL_KEYWORDS
@@ -46,7 +46,7 @@ impl SqlCompleter {
                 vocabulary
                     .fields
                     .iter()
-                    .map(|field| SqlName(field).to_string()),
+                    .map(|field| FirestoreSqlFieldName::from(field.as_str()).to_string()),
             )
             .collect()
     }

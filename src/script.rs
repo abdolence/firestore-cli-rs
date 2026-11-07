@@ -68,23 +68,6 @@ impl Script {
     }
 }
 
-pub struct SqlName<'a>(pub &'a str);
-
-impl std::fmt::Display for SqlName<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut chars = self.0.chars();
-        let plain = chars
-            .next()
-            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
-            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
-        if plain {
-            f.write_str(self.0)
-        } else {
-            write!(f, "`{}`", self.0.replace('`', "\\`"))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

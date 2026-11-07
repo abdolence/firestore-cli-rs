@@ -1,12 +1,12 @@
 use crate::connection::{Connection, EditionStatus};
 use crate::errors::{FsqError, FsqResult};
 use crate::render::{Cell, Grid, ValueKind};
-use crate::script::SqlName;
 use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
 use firestore::{
     FirestoreCollectionSource, FirestoreDatabaseEdition, FirestoreDocument, FirestorePipeline,
     FirestorePipelineSource, FirestorePipelineStage, FirestoreSampleSize, FirestoreSampleStage,
+    FirestoreSqlFieldName,
 };
 use futures::StreamExt;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -196,8 +196,8 @@ impl Description {
     fn add_fields(&mut self, prefix: Option<&str>, fields: &HashMap<String, Value>) {
         for (name, value) in fields {
             let path = match prefix {
-                Some(prefix) => format!("{prefix}.{}", SqlName(name)),
-                None => SqlName(name).to_string(),
+                Some(prefix) => format!("{prefix}.{}", FirestoreSqlFieldName::from(name.as_str())),
+                None => FirestoreSqlFieldName::from(name.as_str()).to_string(),
             };
             let summary = self.fields.entry(path.clone()).or_default();
             summary.kinds.insert(ValueKind::from(value));
@@ -249,6 +249,7 @@ impl FieldPathSummary {
 mod tests {
     use super::*;
     use crate::render::fixtures::{document, draft, dune, string, value};
+    use firestore::gcloud_sdk::google::firestore::v1::MapValue;
 
     fn cells(grid: &Grid, field: &str) -> Vec<Option<Cell>> {
         grid.rows()
@@ -294,6 +295,33 @@ mod tests {
         assert_eq!(
             cells(&grid, "`unit-price`")[1],
             Some(Cell::Text("integer".to_string()))
+        );
+    }
+
+    #[test]
+    fn field_paths_are_written_so_that_sql_reads_the_same_fields() {
+        let mut description = Description::default();
+        description.add(&document(
+            "odd",
+            vec![
+                ("it`s", value(ValueType::IntegerValue(1))),
+                ("order", value(ValueType::IntegerValue(2))),
+                (
+                    "a b",
+                    value(ValueType::MapValue(MapValue {
+                        fields: [("c`d".to_string(), string("x"))].into(),
+                    })),
+                ),
+            ],
+        ));
+
+        let grid = description.into_grid();
+
+        let paths: Vec<_> = grid.rows().iter().map(|row| row[0].clone()).collect();
+        assert_eq!(
+            paths,
+            ["`a b`", "`a b`.`c``d`", "`it``s`", "`order`"]
+                .map(|path| Some(Cell::Text(path.to_string())))
         );
     }
 
