@@ -7,6 +7,7 @@ mod render;
 mod repl;
 mod script;
 mod session;
+mod tokens;
 
 use args::{CliArgs, CliCommand, SqlArgs};
 use clap::Parser;

@@ -1,3 +1,6 @@
+use crate::tokens::SourceTokens;
+use sqlparser::tokenizer::Token;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
     Statement(String),
@@ -6,7 +9,8 @@ pub enum Input {
 
 /// Text split into inputs. The crate takes exactly one statement per call, so a script runs
 /// statement by statement: each ends at a `;` outside a string, a quoted name or a comment. A
-/// line that starts with `\` where a statement would start is a meta-command.
+/// line that starts with `\` where a statement would start, after any comments, is a
+/// meta-command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Script {
     pub inputs: Vec<Input>,
@@ -14,82 +18,46 @@ pub struct Script {
     pub unterminated: Option<String>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    Code,
-    Quoted(char),
-    LineComment,
-    BlockComment,
-}
-
 impl Script {
     pub fn parse(text: &str) -> Self {
-        let chars: Vec<char> = text.chars().collect();
         let mut inputs = Vec::new();
-        let mut statement = String::new();
-        let mut has_content = false;
-        let mut mode = Mode::Code;
-        let mut position = 0;
-        while let Some(&current) = chars.get(position) {
-            let next = chars.get(position + 1).copied();
-            match mode {
-                Mode::Code if current == '\\' && !has_content => {
-                    let end = chars[position..]
-                        .iter()
-                        .position(|&c| c == '\n')
-                        .map_or(chars.len(), |offset| position + offset);
-                    let line: String = chars[position..end].iter().collect();
-                    inputs.push(Input::Meta(line.trim_end().to_string()));
-                    statement.clear();
-                    position = end;
-                    continue;
-                }
-                Mode::Code if current == ';' => {
-                    if has_content {
-                        inputs.push(Input::Statement(statement.trim().to_string()));
+        let mut rest = text;
+        'restart: loop {
+            let SourceTokens { tokens, unread } = SourceTokens::from(rest);
+            let mut statement_start = 0;
+            let mut position = 0;
+            let mut has_content = false;
+            for token in &tokens {
+                let start = position;
+                position += token.text.len();
+                match token.kind {
+                    Token::Whitespace(_) => {}
+                    Token::Backslash if !has_content => {
+                        let end = rest[start..]
+                            .find('\n')
+                            .map_or(rest.len(), |offset| start + offset);
+                        inputs.push(Input::Meta(rest[start..end].trim_end().to_string()));
+                        rest = &rest[end..];
+                        continue 'restart;
                     }
-                    statement.clear();
-                    has_content = false;
-                    position += 1;
-                    continue;
-                }
-                Mode::Code => match (current, next) {
-                    ('\'' | '"' | '`', _) => mode = Mode::Quoted(current),
-                    ('-', Some('-')) | ('#', _) => mode = Mode::LineComment,
-                    ('/', Some('*')) => {
-                        statement.push(current);
-                        position += 1;
-                        mode = Mode::BlockComment;
+                    Token::SemiColon => {
+                        if has_content {
+                            inputs.push(Input::Statement(
+                                rest[statement_start..start].trim().to_string(),
+                            ));
+                        }
+                        statement_start = position;
+                        has_content = false;
                     }
-                    _ => {}
-                },
-                Mode::Quoted(quote) if current == '\\' && quote != '`' => {
-                    statement.push(current);
-                    if let Some(escaped) = next {
-                        statement.push(escaped);
-                    }
-                    position += 2;
-                    continue;
+                    _ => has_content = true,
                 }
-                Mode::Quoted(quote) if current == quote => mode = Mode::Code,
-                Mode::LineComment if current == '\n' => mode = Mode::Code,
-                Mode::BlockComment if current == '*' && next == Some('/') => {
-                    statement.push(current);
-                    position += 1;
-                    mode = Mode::Code;
-                }
-                Mode::Quoted(_) | Mode::LineComment | Mode::BlockComment => {}
             }
-            let in_comment = matches!(mode, Mode::LineComment | Mode::BlockComment);
-            if !in_comment && !current.is_whitespace() {
-                has_content = true;
-            }
-            statement.push(chars[position]);
-            position += 1;
-        }
-        Self {
-            inputs,
-            unterminated: has_content.then(|| statement.trim().to_string()),
+            let unterminated = (has_content || !unread.is_empty())
+                .then(|| rest[statement_start..].trim().to_string());
+            return Self {
+                inputs,
+                unterminated,
+            };
         }
     }
 
@@ -155,6 +123,34 @@ mod tests {
                 Input::Meta("\\l".to_string()),
                 Input::Meta("\\d books --sample 10".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn a_comment_after_the_last_semicolon_is_not_a_statement() {
+        let script = Script::parse("SELECT 1; /* done */");
+
+        assert_eq!(script.inputs, vec![statement("SELECT 1")]);
+        assert_eq!(script.unterminated, None);
+    }
+
+    #[test]
+    fn a_meta_command_after_a_leading_block_comment_is_a_meta_command() {
+        let script = Script::parse("/* header */\n\\x auto\nSELECT 1;");
+
+        assert_eq!(
+            script.inputs,
+            vec![Input::Meta("\\x auto".to_string()), statement("SELECT 1")]
+        );
+    }
+
+    #[test]
+    fn a_raw_string_ends_at_its_closing_quote() {
+        let script = Script::parse("SELECT r'\\' AS x; SELECT 2;");
+
+        assert_eq!(
+            script.inputs,
+            vec![statement("SELECT r'\\' AS x"), statement("SELECT 2")]
         );
     }
 

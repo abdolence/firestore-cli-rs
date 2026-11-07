@@ -786,6 +786,7 @@ dependencies = [
  "nu-ansi-term",
  "reedline",
  "serde_json",
+ "sqlparser",
  "thiserror",
  "tokio",
  "tracing",
