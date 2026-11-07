@@ -3,18 +3,14 @@ use firestore::errors::FirestoreError;
 use firestore::{
     FirestoreDatabaseEdition, FirestoreDb, FirestoreDbOptions, FIREBASE_DEFAULT_DATABASE_ID,
 };
-use std::convert::Infallible;
 use std::fmt::{Display, Formatter};
-use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectId(String);
 
-impl FromStr for ProjectId {
-    type Err = Infallible;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Ok(Self(value.to_string()))
+impl From<&str> for ProjectId {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
     }
 }
 
@@ -39,11 +35,9 @@ impl Default for DatabaseId {
     }
 }
 
-impl FromStr for DatabaseId {
-    type Err = Infallible;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Ok(Self(value.to_string()))
+impl From<&str> for DatabaseId {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
     }
 }
 

@@ -119,10 +119,7 @@ impl FromStr for MetaCommand {
             "\\d" => Self::Describe(DescribeTarget::try_from(arguments.as_slice())?),
             "\\x" => Self::Expanded(optional_argument("\\x", &arguments, "on, off or auto")?),
             "\\c" => match arguments.as_slice() {
-                [database] => {
-                    let Ok(database) = database.parse();
-                    Self::Connect(database)
-                }
+                [database] => Self::Connect(DatabaseId::from(*database)),
                 [] => return Err(FsqError::missing_meta_argument("\\c", "a database ID")),
                 [_, extra, ..] => {
                     return Err(FsqError::invalid_meta_argument(
@@ -235,7 +232,7 @@ mod tests {
         assert_eq!(parsed("\\wait OFF"), MetaCommand::Wait(Some(Switch::Off)));
         assert_eq!(
             parsed("\\c firestore-rs-enterprise"),
-            MetaCommand::Connect("firestore-rs-enterprise".parse().expect("infallible"))
+            MetaCommand::Connect(DatabaseId::from("firestore-rs-enterprise"))
         );
         assert_eq!(
             parsed("\\d users/alice/orders --sample 20"),
