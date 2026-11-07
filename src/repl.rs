@@ -106,11 +106,14 @@ pub async fn run(mut session: Session) -> FsqResult<()> {
         let prompt = SessionPrompt(session.connection.label());
         let signal = tokio::task::block_in_place(|| editor.read_line(&prompt))?;
         match signal {
-            Signal::Success(buffer) => {
-                if run_buffer(&mut session, &buffer).await.flow == Flow::Quit {
-                    return Ok(());
-                }
-            }
+            Signal::Success(buffer) => match run_buffer(&mut session, &buffer).await {
+                Ok(BufferRun {
+                    flow: Flow::Quit, ..
+                }) => return Ok(()),
+                // Ctrl-C ends the rest of the buffer, not the REPL.
+                Ok(_) | Err(FsqError::Interrupted) => {}
+                Err(error) => return Err(error),
+            },
             Signal::CtrlD => return Ok(()),
             _ => {}
         }
@@ -121,7 +124,7 @@ pub async fn run(mut session: Session) -> FsqResult<()> {
 /// still runs.
 pub async fn run_piped(mut session: Session, buffer: &str) -> FsqResult<()> {
     session.greet()?;
-    match run_buffer(&mut session, buffer).await.failed {
+    match run_buffer(&mut session, buffer).await?.failed {
         0 => Ok(()),
         failed => Err(FsqError::InputsFailed { failed }),
     }
@@ -132,27 +135,39 @@ struct BufferRun {
     failed: usize,
 }
 
-async fn run_buffer(session: &mut Session, buffer: &str) -> BufferRun {
-    let mut failed = 0;
+impl BufferRun {
+    /// Counts a failed input and lets the buffer carry on. An interrupt or a closed output pipe
+    /// ends it instead: the statements after it would run against Firestore for nobody.
+    fn record_failure(&mut self, error: FsqError) -> FsqResult<()> {
+        if matches!(error, FsqError::Interrupted) || error.is_broken_pipe() {
+            return Err(error);
+        }
+        self.failed += 1;
+        Ok(())
+    }
+}
+
+async fn run_buffer(session: &mut Session, buffer: &str) -> FsqResult<BufferRun> {
+    let mut run = BufferRun {
+        flow: Flow::Continue,
+        failed: 0,
+    };
     for input in Script::parse(buffer).into_inputs() {
         match session.run_input(&input).await {
             Ok(Flow::Continue) => {}
             Ok(Flow::Quit) => {
-                return BufferRun {
-                    flow: Flow::Quit,
-                    failed,
-                }
+                run.flow = Flow::Quit;
+                break;
             }
             Err(error) => {
-                session.report(&error);
-                failed += 1;
+                if !error.is_broken_pipe() {
+                    session.report(&error);
+                }
+                run.record_failure(error)?;
             }
         }
     }
-    BufferRun {
-        flow: Flow::Continue,
-        failed,
-    }
+    Ok(run)
 }
 
 fn keybindings() -> reedline::Keybindings {
@@ -220,5 +235,37 @@ impl Prompt for SessionPrompt {
             PromptHistorySearchStatus::Failing => "failing ",
         };
         Cow::Owned(format!("({status}search: {}) ", search.term))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run() -> BufferRun {
+        BufferRun {
+            flow: Flow::Continue,
+            failed: 0,
+        }
+    }
+
+    #[test]
+    fn a_failed_input_is_counted_and_the_buffer_carries_on() {
+        let mut run = run();
+
+        run.record_failure(FsqError::NoProject).expect("carries on");
+
+        assert_eq!(run.failed, 1);
+    }
+
+    #[test]
+    fn an_interrupt_or_a_closed_pipe_stops_the_buffer() {
+        let closed_pipe = FsqError::Io(std::io::ErrorKind::BrokenPipe.into());
+
+        assert!(matches!(
+            run().record_failure(FsqError::Interrupted),
+            Err(FsqError::Interrupted)
+        ));
+        assert!(run().record_failure(closed_pipe).is_err());
     }
 }

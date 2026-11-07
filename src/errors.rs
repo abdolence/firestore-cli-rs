@@ -50,3 +50,10 @@ pub enum FsqError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
+
+impl FsqError {
+    /// The reader of piped output, such as `head`, stopped reading.
+    pub fn is_broken_pipe(&self) -> bool {
+        matches!(self, Self::Io(error) if error.kind() == std::io::ErrorKind::BrokenPipe)
+    }
+}

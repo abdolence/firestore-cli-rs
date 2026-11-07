@@ -38,10 +38,7 @@ async fn main() -> ExitCode {
     match run(CliArgs::parse()).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(FsqError::Interrupted) => ExitCode::from(INTERRUPTED_EXIT_CODE),
-        // The reader of piped output, such as `head`, stopped reading.
-        Err(FsqError::Io(error)) if error.kind() == std::io::ErrorKind::BrokenPipe => {
-            ExitCode::SUCCESS
-        }
+        Err(error) if error.is_broken_pipe() => ExitCode::SUCCESS,
         Err(error) => {
             let message = format!(
                 "{} {error}",
