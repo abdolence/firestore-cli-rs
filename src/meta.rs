@@ -1,6 +1,6 @@
 use crate::connection::DatabaseId;
 use crate::describe::{CollectionPath, DescribeTarget, SampleSize};
-use crate::errors::{FsqError, FsqResult, UnknownChoice, UnknownMetaCommand};
+use crate::errors::{FsqError, FsqResult, UnknownMetaCommand};
 use crate::render::ExpandedMode;
 use std::str::FromStr;
 
@@ -117,7 +117,12 @@ impl FromStr for MetaCommand {
             "\\?" => no_arguments("\\?", &arguments, Self::Help)?,
             "\\l" => no_arguments("\\l", &arguments, Self::ListCollections)?,
             "\\d" => Self::Describe(DescribeTarget::try_from(arguments.as_slice())?),
-            "\\x" => Self::Expanded(optional_argument("\\x", &arguments, "on, off or auto")?),
+            "\\x" => Self::Expanded(optional_argument(
+                "\\x",
+                &arguments,
+                "on, off or auto",
+                ExpandedMode::from_argument,
+            )?),
             "\\c" => match arguments.as_slice() {
                 [database] => Self::Connect(DatabaseId::from(*database)),
                 [] => return Err(FsqError::missing_meta_argument("\\c", "a database ID")),
@@ -129,8 +134,18 @@ impl FromStr for MetaCommand {
                     ))
                 }
             },
-            "\\timing" => Self::Timing(optional_argument("\\timing", &arguments, "on or off")?),
-            "\\wait" => Self::Wait(optional_argument("\\wait", &arguments, "on or off")?),
+            "\\timing" => Self::Timing(optional_argument(
+                "\\timing",
+                &arguments,
+                "on or off",
+                Switch::from_argument,
+            )?),
+            "\\wait" => Self::Wait(optional_argument(
+                "\\wait",
+                &arguments,
+                "on or off",
+                Switch::from_argument,
+            )?),
             other => {
                 return Err(FsqError::UnknownMetaCommand(UnknownMetaCommand {
                     command: other.to_string(),
@@ -141,14 +156,13 @@ impl FromStr for MetaCommand {
     }
 }
 
-impl FromStr for Switch {
-    type Err = UnknownChoice;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.to_ascii_lowercase().as_str() {
-            "on" => Ok(Self::On),
-            "off" => Ok(Self::Off),
-            _ => Err(UnknownChoice(value.to_string())),
+impl Switch {
+    /// The switch a `\timing` or `\wait` argument names, in any case.
+    fn from_argument(argument: &str) -> Option<Self> {
+        match argument.to_ascii_lowercase().as_str() {
+            "on" => Some(Self::On),
+            "off" => Some(Self::Off),
+            _ => None,
         }
     }
 }
@@ -168,17 +182,17 @@ fn no_arguments(
     }
 }
 
-fn optional_argument<T: FromStr>(
+fn optional_argument<T>(
     command: &'static str,
     arguments: &[&str],
     expected: &'static str,
+    from_argument: fn(&str) -> Option<T>,
 ) -> FsqResult<Option<T>> {
     match arguments {
         [] => Ok(None),
-        [argument] => argument
-            .parse()
+        [argument] => from_argument(argument)
             .map(Some)
-            .map_err(|_| FsqError::invalid_meta_argument(command, argument, expected)),
+            .ok_or_else(|| FsqError::invalid_meta_argument(command, argument, expected)),
         [_, extra, ..] => Err(FsqError::invalid_meta_argument(command, extra, expected)),
     }
 }

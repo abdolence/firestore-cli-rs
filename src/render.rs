@@ -16,10 +16,8 @@ pub use output::*;
 pub use plan::*;
 pub use value::*;
 
-use crate::errors::UnknownChoice;
 use clap::ValueEnum;
 use console::Style;
-use std::str::FromStr;
 
 /// `count` and the noun that fits it: `1 row`, `2 rows`.
 pub fn counted<N>(count: N, singular: &str, plural: &str) -> String
@@ -48,15 +46,14 @@ pub enum ExpandedMode {
     Auto,
 }
 
-impl FromStr for ExpandedMode {
-    type Err = UnknownChoice;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.to_ascii_lowercase().as_str() {
-            "on" => Ok(Self::On),
-            "off" => Ok(Self::Off),
-            "auto" => Ok(Self::Auto),
-            _ => Err(UnknownChoice(value.to_string())),
+impl ExpandedMode {
+    /// The mode a `\x` argument names, in any case.
+    pub fn from_argument(argument: &str) -> Option<Self> {
+        match argument.to_ascii_lowercase().as_str() {
+            "on" => Some(Self::On),
+            "off" => Some(Self::Off),
+            "auto" => Some(Self::Auto),
+            _ => None,
         }
     }
 }

@@ -93,11 +93,6 @@ pub struct InputsFailed {
     pub failed: usize,
 }
 
-/// A value that is none of the choices a setting offers.
-#[derive(Debug, Error)]
-#[error("`{0}` is not one of the choices")]
-pub struct UnknownChoice(pub String);
-
 impl FsqError {
     pub fn invalid_meta_argument(
         command: &'static str,
