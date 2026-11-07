@@ -1,6 +1,6 @@
 use crate::connection::{Connection, EditionStatus};
 use crate::errors::{FsqError, FsqResult, InvalidCollectionPath, InvalidSampleSize};
-use crate::render::{Cell, Grid, ValueKind};
+use crate::render::{Cell, Grid};
 use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
 use firestore::{
@@ -61,15 +61,6 @@ impl FromStr for CollectionPath {
     }
 }
 
-impl Display for CollectionPath {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match &self.parent {
-            Some(parent) => write!(f, "{parent}/{}", self.collection_id),
-            None => f.write_str(&self.collection_id),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SampleSize(NonZeroU32);
 
@@ -120,7 +111,8 @@ pub struct Description {
 
 #[derive(Debug, Default)]
 struct FieldPathSummary {
-    kinds: BTreeSet<ValueKind>,
+    /// The names of the types the field holds, in alphabetical order.
+    types: BTreeSet<&'static str>,
     documents_with_it: usize,
     example: Option<Value>,
 }
@@ -198,7 +190,7 @@ impl Description {
                 None => FirestoreSqlFieldName::from(name.as_str()).to_string(),
             };
             let summary = self.fields.entry(path.clone()).or_default();
-            summary.kinds.insert(ValueKind::from(value));
+            summary.types.insert(type_name(value));
             summary.documents_with_it += 1;
             let is_null = matches!(value.value_type, Some(ValueType::NullValue(_)) | None);
             if summary.example.is_none() || (!is_null && summary.example_is_null()) {
@@ -215,12 +207,7 @@ impl Description {
     pub fn into_grid(self) -> Grid {
         let mut grid = Grid::new(["field", "types", "present", "example"]);
         for (path, summary) in self.fields {
-            let types = summary
-                .kinds
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ");
+            let types = summary.types.into_iter().collect::<Vec<_>>().join(", ");
             grid.push_row(vec![
                 Some(Cell::Text(path)),
                 Some(Cell::Text(types)),
@@ -231,6 +218,30 @@ impl Description {
             ]);
         }
         grid
+    }
+}
+
+/// Names the type of a value as `\d` lists it. An expression value is one that a pipeline takes
+/// as input and never returns in a document.
+fn type_name(value: &Value) -> &'static str {
+    match &value.value_type {
+        None | Some(ValueType::NullValue(_)) => "null",
+        Some(ValueType::BooleanValue(_)) => "boolean",
+        Some(ValueType::IntegerValue(_)) => "integer",
+        Some(ValueType::DoubleValue(_)) => "double",
+        Some(ValueType::TimestampValue(_)) => "timestamp",
+        Some(ValueType::StringValue(_)) => "string",
+        Some(ValueType::BytesValue(_)) => "bytes",
+        Some(ValueType::ReferenceValue(_)) => "reference",
+        Some(ValueType::GeoPointValue(_)) => "geopoint",
+        Some(ValueType::ArrayValue(_)) => "array",
+        Some(ValueType::MapValue(_)) => "map",
+        Some(
+            ValueType::FieldReferenceValue(_)
+            | ValueType::VariableReferenceValue(_)
+            | ValueType::FunctionValue(_)
+            | ValueType::PipelineValue(_),
+        ) => "expression",
     }
 }
 

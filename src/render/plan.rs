@@ -1,6 +1,4 @@
 use super::{Cell, Grid, View};
-use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
-use firestore::gcloud_sdk::google::firestore::v1::{ArrayValue, Value};
 use std::fmt::{Display, Formatter};
 
 /// Query Explain's text of a pipeline. Firestore documents neither the format nor its stability,
@@ -25,30 +23,17 @@ impl QueryPlan {
         Self { text }
     }
 
-    pub fn indexes_used(&self) -> Vec<&str> {
-        self.tree_lines()
-            .filter_map(|line| match line {
-                PlanLine::Property {
-                    key: "index",
-                    value,
-                    ..
-                } => Some(value),
-                _ => None,
-            })
-            .collect()
-    }
-
     pub fn table_scans(&self) -> Vec<&str> {
         let mut in_table_scan = false;
         let mut sources = Vec::new();
         for line in self.tree_lines() {
             match line {
-                PlanLine::Node { name, .. } => in_table_scan = name == TABLE_SCAN_NODE,
-                PlanLine::Property {
+                PlanLine::Node(PlanNode { name, .. }) => in_table_scan = name == TABLE_SCAN_NODE,
+                PlanLine::Property(PlanProperty {
                     key: "source",
                     value,
                     ..
-                } if in_table_scan => {
+                }) if in_table_scan => {
                     sources.push(value);
                     in_table_scan = false;
                 }
@@ -90,43 +75,35 @@ impl QueryPlan {
 
 impl Grid {
     pub fn plan(plan: &QueryPlan) -> Self {
-        let strings = |items: Vec<&str>| {
-            Cell::Value(Value {
-                value_type: Some(ValueType::ArrayValue(ArrayValue {
-                    values: items
-                        .into_iter()
-                        .map(|item| Value {
-                            value_type: Some(ValueType::StringValue(item.to_string())),
-                        })
-                        .collect(),
-                })),
-            })
-        };
-        let mut grid = Grid::new(["text", "indexes_used", "table_scans"]);
-        grid.push_row(vec![
-            Some(Cell::Text(plan.text.clone())),
-            Some(strings(plan.indexes_used())),
-            Some(strings(plan.table_scans())),
-        ]);
+        let mut grid = Grid::new(["text"]);
+        grid.push_row(vec![Some(Cell::Text(plan.text.clone()))]);
         grid
     }
 }
 
 enum PlanLine<'a> {
-    Node {
-        prefix: &'a str,
-        name: &'a str,
-        rest: &'a str,
-    },
-    Property {
-        prefix: &'a str,
-        key: &'a str,
-        value: &'a str,
-    },
-    Other {
-        prefix: &'a str,
-        text: &'a str,
-    },
+    Node(PlanNode<'a>),
+    Property(PlanProperty<'a>),
+    Other(PlanText<'a>),
+}
+
+/// A `• Name rest` line, a node of the tree.
+struct PlanNode<'a> {
+    prefix: &'a str,
+    name: &'a str,
+    rest: &'a str,
+}
+
+/// A `key: value` line of a node.
+struct PlanProperty<'a> {
+    prefix: &'a str,
+    key: &'a str,
+    value: &'a str,
+}
+
+struct PlanText<'a> {
+    prefix: &'a str,
+    text: &'a str,
 }
 
 impl<'a> From<&'a str> for PlanLine<'a> {
@@ -135,14 +112,14 @@ impl<'a> From<&'a str> for PlanLine<'a> {
         let prefix = &line[..line.len() - text.len()];
         if let Some(node) = text.strip_prefix("• ") {
             let (name, rest) = node.split_at(node.find(' ').unwrap_or(node.len()));
-            return Self::Node { prefix, name, rest };
+            return Self::Node(PlanNode { prefix, name, rest });
         }
         match text.split_once(": ") {
             // `$name: expression` binds a variable, drawn as plain text rather than as a property.
             Some((key, value)) if !key.contains(['(', '$']) => {
-                Self::Property { prefix, key, value }
+                Self::Property(PlanProperty { prefix, key, value })
             }
-            _ => Self::Other { prefix, text },
+            _ => Self::Other(PlanText { prefix, text }),
         }
     }
 }
@@ -167,7 +144,7 @@ impl View<'_> {
                 continue;
             }
             let rendered = match PlanLine::from(line) {
-                PlanLine::Node { prefix, name, rest } => {
+                PlanLine::Node(PlanNode { prefix, name, rest }) => {
                     in_node_execution = false;
                     let style = if name == TABLE_SCAN_NODE {
                         &theme.warning
@@ -181,41 +158,42 @@ impl View<'_> {
                         rest
                     )
                 }
-                PlanLine::Other { prefix, text } if text == "Execution:" => {
+                PlanLine::Other(PlanText { prefix, text }) if text == "Execution:" => {
                     in_node_execution = true;
                     format!("{}{}", tree_prefix(prefix), theme.muted.apply_to(text))
                 }
-                PlanLine::Other { prefix, text: "" } => {
+                PlanLine::Other(PlanText { prefix, text: "" }) => {
                     in_node_execution = false;
                     tree_prefix(prefix).trim_end().to_string()
                 }
-                PlanLine::Property { prefix, key, value } if in_node_execution => format!(
-                    "{}{}",
-                    tree_prefix(prefix),
-                    theme.muted.apply_to(format!("{key}: {value}"))
-                ),
-                PlanLine::Property {
+                PlanLine::Property(PlanProperty { prefix, key, value }) if in_node_execution => {
+                    format!(
+                        "{}{}",
+                        tree_prefix(prefix),
+                        theme.muted.apply_to(format!("{key}: {value}"))
+                    )
+                }
+                PlanLine::Property(PlanProperty {
                     prefix,
                     key: "index",
                     value,
-                } => format!(
+                }) => format!(
                     "{}{} {}",
                     tree_prefix(prefix),
                     theme.muted.apply_to("index:"),
                     theme.success.apply_to(value)
                 ),
-                PlanLine::Property { prefix, key, value } => format!(
+                PlanLine::Property(PlanProperty { prefix, key, value }) => format!(
                     "{}{} {value}",
                     tree_prefix(prefix),
                     theme.muted.apply_to(format!("{key}:"))
                 ),
-                PlanLine::Other { prefix, text } => format!("{}{text}", tree_prefix(prefix)),
+                PlanLine::Other(PlanText { prefix, text }) => {
+                    format!("{}{text}", tree_prefix(prefix))
+                }
             };
             out.push_str(&rendered);
             out.push('\n');
-        }
-        for index in plan.indexes_used() {
-            out.push_str(&format!("Index used: {}\n", theme.success.apply_to(index)));
         }
         for source in plan.table_scans() {
             out.push_str(&format!(
@@ -343,16 +321,11 @@ Tree:
     }
 
     #[test]
-    fn an_indexed_plan_names_the_index_it_reads_through() {
+    fn an_indexed_plan_has_no_table_scan_to_warn_about() {
         let plan = QueryPlan::new(INDEXED_ANALYZE_PLAN.to_string());
 
-        assert_eq!(
-            plan.indexes_used(),
-            vec!["/books (genre ASC, rating DESC)@[id = CICAgPifq5IJ]"]
-        );
         assert!(plan.table_scans().is_empty());
-        assert!(rendered(INDEXED_ANALYZE_PLAN)
-            .ends_with("Index used: /books (genre ASC, rating DESC)@[id = CICAgPifq5IJ]\n"));
+        assert!(!rendered(INDEXED_ANALYZE_PLAN).contains("Warning:"));
     }
 
     #[test]

@@ -10,8 +10,8 @@ crate, which translates SQL into Firestore pipelines.
 
 * **SQL REPL:** highlighting, completion of collections and fields, statements across several lines and a history;
 * **Results as tables:** nested values in compact cells, and an expanded view with one block per document;
-* **Query plans:** `EXPLAIN` draws the plan as a coloured tree, with the index it reads through, or a warning when
-  it reads every document of the collection;
+* **Query plans:** `EXPLAIN` draws the plan as a coloured tree, with a warning when it reads every document of the
+  collection;
 * **Index statements:** `CREATE INDEX`, `DROP INDEX`, `ALTER COLLECTION` and `SHOW INDEXES`, waiting for an index
   build with a spinner;
 * **Collections and fields:** `\l` lists the collections, and `\d` lists the field paths of a collection with their
@@ -121,9 +121,9 @@ The statements and their options are in [Index statements](https://firestore-rus
 ## Query plans
 
 `EXPLAIN SELECT ..` shows the plan Firestore chose, without reading any document, and `EXPLAIN ANALYZE SELECT ..`
-also returns the rows and what the run read. The plan is drawn as a tree, followed by the index the statement reads
-through, or by a warning for a *table scan*: a read of every document of the collection, instead of an index. The
-Firestore emulator returns no plan, and fsq says so.
+also returns the rows and what the run read. The plan is drawn as a tree, followed by a warning for a *table scan*:
+a read of every document of the collection, instead of an index. The Firestore emulator returns no plan, and fsq says
+so.
 
 `\timing on` runs every `SELECT` with `ANALYZE` and adds to the footer the round trip time, the documents read and
 the read units. A *read unit* is how the Enterprise edition bills reads: 4 KiB of the data a read processes.

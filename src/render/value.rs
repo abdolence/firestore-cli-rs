@@ -9,66 +9,6 @@ use std::fmt::{Display, Formatter, Write};
 
 pub const CELL_TEXT_LIMIT: usize = 40;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ValueKind {
-    Null,
-    Boolean,
-    Integer,
-    Double,
-    Timestamp,
-    String,
-    Bytes,
-    Reference,
-    GeoPoint,
-    Array,
-    Map,
-    /// An expression value, which a pipeline takes as input and never returns in a document.
-    Expression,
-}
-
-impl From<&Value> for ValueKind {
-    fn from(value: &Value) -> Self {
-        match &value.value_type {
-            None | Some(ValueType::NullValue(_)) => Self::Null,
-            Some(ValueType::BooleanValue(_)) => Self::Boolean,
-            Some(ValueType::IntegerValue(_)) => Self::Integer,
-            Some(ValueType::DoubleValue(_)) => Self::Double,
-            Some(ValueType::TimestampValue(_)) => Self::Timestamp,
-            Some(ValueType::StringValue(_)) => Self::String,
-            Some(ValueType::BytesValue(_)) => Self::Bytes,
-            Some(ValueType::ReferenceValue(_)) => Self::Reference,
-            Some(ValueType::GeoPointValue(_)) => Self::GeoPoint,
-            Some(ValueType::ArrayValue(_)) => Self::Array,
-            Some(ValueType::MapValue(_)) => Self::Map,
-            Some(
-                ValueType::FieldReferenceValue(_)
-                | ValueType::VariableReferenceValue(_)
-                | ValueType::FunctionValue(_)
-                | ValueType::PipelineValue(_),
-            ) => Self::Expression,
-        }
-    }
-}
-
-impl Display for ValueKind {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Null => "null",
-            Self::Boolean => "boolean",
-            Self::Integer => "integer",
-            Self::Double => "double",
-            Self::Timestamp => "timestamp",
-            Self::String => "string",
-            Self::Bytes => "bytes",
-            Self::Reference => "reference",
-            Self::GeoPoint => "geopoint",
-            Self::Array => "array",
-            Self::Map => "map",
-            Self::Expression => "expression",
-        })
-    }
-}
-
 impl View<'_> {
     pub fn compact_value(&self, value: &Value) -> String {
         let theme = self.theme;
