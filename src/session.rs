@@ -1,7 +1,7 @@
 mod rows;
 mod statement;
 
-use crate::connection::{Connection, DatabaseEdition, EditionStatus};
+use crate::connection::{Connection, EditionStatus};
 use crate::describe::{DescribeTarget, Description};
 use crate::errors::{FsqError, FsqResult};
 use crate::meta::{MetaCommand, Switch, META_HELP};
@@ -9,7 +9,7 @@ use crate::render::{
     Counted, ExpandedMode, Footer, FooterNote, Grid, Output, OutputFormat, Theme, View, NAME_COLUMN,
 };
 use crate::script::{Input, Script};
-use firestore::{FirestoreCollectionId, FirestoreSqlOutcome};
+use firestore::{FirestoreCollectionId, FirestoreDatabaseEdition, FirestoreSqlOutcome};
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -162,7 +162,7 @@ impl Session {
         self.output
             .notice(&format!("Connected to {}.", self.connection.label()))?;
         match &self.connection.edition {
-            EditionStatus::Known(DatabaseEdition::Standard) => self.output.notice(
+            EditionStatus::Known(FirestoreDatabaseEdition::Standard) => self.output.notice(
                 &self.theme.warning.apply_to(
                     "SQL needs an Enterprise edition database, and on this Standard edition database SELECT and the writes fail. \\l, \\d, SHOW COLLECTIONS, SHOW INDEXES and the index statements work on both editions.",
                 ).to_string(),
@@ -170,7 +170,14 @@ impl Session {
             EditionStatus::Unreadable(error) => self
                 .output
                 .notice(&format!("The edition of the database could not be read: {error}")),
-            EditionStatus::Known(DatabaseEdition::Enterprise) | EditionStatus::Emulator => Ok(()),
+            EditionStatus::Known(FirestoreDatabaseEdition::Enterprise) | EditionStatus::Emulator => {
+                Ok(())
+            }
+            EditionStatus::Known(_) => self.output.notice(
+                &self.theme.warning.apply_to(
+                    "SQL needs an Enterprise edition database, and the edition of this database is unknown to this version of fsq, so SELECT and the writes may fail. \\l, \\d, SHOW COLLECTIONS, SHOW INDEXES and the index statements may not work either.",
+                ).to_string(),
+            ),
         }
     }
 

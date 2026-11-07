@@ -1,9 +1,8 @@
 use crate::errors::{FsqError, FsqResult};
 use firestore::errors::FirestoreError;
-use firestore::gcloud_sdk::google::firestore::admin::v1::database::DatabaseEdition as ProtoDatabaseEdition;
-use firestore::gcloud_sdk::google::firestore::admin::v1::firestore_admin_client::FirestoreAdminClient;
-use firestore::gcloud_sdk::google::firestore::admin::v1::GetDatabaseRequest;
-use firestore::{FirestoreDb, FirestoreDbOptions, FIREBASE_DEFAULT_DATABASE_ID};
+use firestore::{
+    FirestoreDatabaseEdition, FirestoreDb, FirestoreDbOptions, FIREBASE_DEFAULT_DATABASE_ID,
+};
 use std::convert::Infallible;
 use std::fmt::{Display, Formatter};
 use std::path::PathBuf;
@@ -70,34 +69,9 @@ impl Display for DatabaseId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DatabaseEdition {
-    Standard,
-    Enterprise,
-}
-
-impl From<ProtoDatabaseEdition> for DatabaseEdition {
-    fn from(edition: ProtoDatabaseEdition) -> Self {
-        match edition {
-            ProtoDatabaseEdition::Enterprise => Self::Enterprise,
-            // Firestore documents Standard as the edition of a database created without one.
-            ProtoDatabaseEdition::Standard | ProtoDatabaseEdition::Unspecified => Self::Standard,
-        }
-    }
-}
-
-impl Display for DatabaseEdition {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Standard => "standard",
-            Self::Enterprise => "enterprise",
-        })
-    }
-}
-
 #[derive(Debug)]
 pub enum EditionStatus {
-    Known(DatabaseEdition),
+    Known(FirestoreDatabaseEdition),
     /// The emulator serves no Admin API to read the edition from.
     Emulator,
     Unreadable(FirestoreError),
@@ -106,7 +80,13 @@ pub enum EditionStatus {
 impl Display for EditionStatus {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Known(edition) => edition.fmt(f),
+            Self::Known(FirestoreDatabaseEdition::Standard) => f.write_str("standard"),
+            Self::Known(FirestoreDatabaseEdition::Enterprise) => f.write_str("enterprise"),
+            Self::Known(FirestoreDatabaseEdition::Unknown(raw)) => {
+                write!(f, "edition unknown (raw {raw})")
+            }
+            // The crate may add editions that this version of fsq has no name for.
+            Self::Known(_) => f.write_str("edition unknown"),
             Self::Emulator => f.write_str("emulator"),
             Self::Unreadable(_) => f.write_str("edition unknown"),
         }
@@ -130,7 +110,7 @@ impl Connection {
         let edition = if env_var(EMULATOR_HOST_VAR).is_some() {
             EditionStatus::Emulator
         } else {
-            match read_edition(&db).await {
+            match db.read_database_edition().await {
                 Ok(edition) => EditionStatus::Known(edition),
                 Err(error) => EditionStatus::Unreadable(error),
             }
@@ -146,20 +126,6 @@ impl Connection {
     pub fn label(&self) -> String {
         format!("{}/{} ({})", self.project, self.database, self.edition)
     }
-}
-
-// The firestore crate reads the edition for its index statements but does not expose it, so this
-// goes through the Admin API client on the crate's own authenticated channel.
-async fn read_edition(db: &FirestoreDb) -> Result<DatabaseEdition, FirestoreError> {
-    let database = db
-        .client()
-        .get_with(FirestoreAdminClient::new)
-        .get_database(GetDatabaseRequest {
-            name: db.get_database_path().clone(),
-        })
-        .await?
-        .into_inner();
-    Ok(database.database_edition().into())
 }
 
 fn env_var(name: &str) -> Option<String> {
@@ -233,6 +199,14 @@ mod tests {
         assert_eq!(
             project_in_gcloud_config("[compute]\nproject = not-this-one\n"),
             None
+        );
+    }
+
+    #[test]
+    fn unknown_edition_displays_its_raw_value() {
+        assert_eq!(
+            EditionStatus::Known(FirestoreDatabaseEdition::Unknown(7)).to_string(),
+            "edition unknown (raw 7)"
         );
     }
 }

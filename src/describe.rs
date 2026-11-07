@@ -1,12 +1,12 @@
-use crate::connection::{Connection, DatabaseEdition, EditionStatus};
+use crate::connection::{Connection, EditionStatus};
 use crate::errors::{FsqError, FsqResult};
 use crate::render::{Cell, Grid, ValueKind};
 use crate::script::SqlName;
 use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
 use firestore::{
-    FirestoreCollectionSource, FirestoreDocument, FirestorePipeline, FirestorePipelineSource,
-    FirestorePipelineStage, FirestoreSampleSize, FirestoreSampleStage,
+    FirestoreCollectionSource, FirestoreDatabaseEdition, FirestoreDocument, FirestorePipeline,
+    FirestorePipelineSource, FirestorePipelineStage, FirestoreSampleSize, FirestoreSampleStage,
 };
 use futures::StreamExt;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -139,7 +139,7 @@ impl Description {
             .map(|parent| format!("{}/{parent}", db.get_documents_path()));
         let size = target.sample.documents();
         let mut documents = match connection.edition {
-            EditionStatus::Known(DatabaseEdition::Enterprise) => {
+            EditionStatus::Known(FirestoreDatabaseEdition::Enterprise) => {
                 let pipeline = FirestorePipeline::new(FirestorePipelineSource::Collection(
                     FirestoreCollectionSource::new(collection.collection_id().to_string())
                         .opt_parent(parent),
