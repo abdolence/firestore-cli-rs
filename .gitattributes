@@ -1,0 +1,2 @@
+# The rendering tests compare output with expected text kept in the sources.
+*.rs text eol=lf

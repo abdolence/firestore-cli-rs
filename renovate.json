@@ -1,0 +1,13 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "group:allNonMajor"
+  ],
+  "packageRules": [
+    {
+      "matchPackageNames": ["reedline"],
+      "allowedVersions": "<0.50",
+      "description": "reedline 0.50 and later need Rust 1.95, above the rust-version of the crate"
+    }
+  ]
+}
