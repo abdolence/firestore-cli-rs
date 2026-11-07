@@ -1,8 +1,7 @@
 use super::{Cell, Grid};
 use firestore::{
-    FirestoreCollectionId, FirestoreCompositeIndex, FirestoreFieldOverrideOutcome,
-    FirestoreFieldTtlOutcome, FirestoreListedCompositeIndex, FirestoreListedField,
-    FirestoreUnrecognisedIndexItem,
+    FirestoreCollectionId, FirestoreFieldOverrideOutcome, FirestoreFieldTtlOutcome,
+    FirestoreListedCompositeIndex, FirestoreListedField, FirestoreUnrecognisedIndexItem,
 };
 
 impl Grid {
@@ -36,6 +35,7 @@ impl Grid {
             "options",
         ]);
         for listed in indexes {
+            let options = listed.index.options().to_string();
             grid.push_row(vec![
                 Some(Cell::Text(listed.collection_group.to_string())),
                 Some(Cell::Text(listed.id.to_string())),
@@ -50,7 +50,7 @@ impl Grid {
                         .collect::<Vec<_>>()
                         .join(", "),
                 )),
-                index_options(&listed.index).map(Cell::Text),
+                (!options.is_empty()).then_some(Cell::Text(options)),
             ]);
         }
         grid
@@ -112,32 +112,14 @@ impl Grid {
     }
 }
 
-fn index_options(index: &FirestoreCompositeIndex) -> Option<String> {
-    let mut options = Vec::new();
-    if index.unique {
-        options.push("unique".to_string());
-    }
-    if let Some(density) = &index.density {
-        options.push(format!("density={density}"));
-    }
-    if let Some(search) = &index.search_options {
-        if let Some(language) = &search.text_language {
-            options.push(format!("text_language={language}"));
-        }
-        if let Some(path) = &search.text_language_override_field_path {
-            options.push(format!("text_language_override_field_path={path}"));
-        }
-    }
-    (!options.is_empty()).then(|| options.join(" "))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::render::{ExpandedMode, OutputFormat, Theme, View};
     use firestore::{
-        FirestoreIndexDensity, FirestoreIndexField, FirestoreIndexFieldMode,
-        FirestoreIndexQueryScope, FirestoreIndexState, FirestoreQueryDirection,
+        FirestoreCompositeIndex, FirestoreIndexDensity, FirestoreIndexField,
+        FirestoreIndexFieldMode, FirestoreIndexQueryScope, FirestoreIndexState,
+        FirestoreQueryDirection,
     };
 
     fn table(grid: &Grid) -> String {
