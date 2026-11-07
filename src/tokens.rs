@@ -55,17 +55,18 @@ struct ByteOffsets {
 
 impl ByteOffsets {
     fn new(text: &str) -> Self {
+        let mut line_starts = vec![0];
+        let mut char_starts = Vec::with_capacity(text.len());
+        for (offset, c) in text.char_indices() {
+            char_starts.push(offset);
+            if c == '\n' {
+                line_starts.push(char_starts.len());
+            }
+        }
         Self {
             text_len: text.len(),
-            line_starts: std::iter::once(0)
-                .chain(
-                    text.chars()
-                        .enumerate()
-                        .filter(|(_, c)| *c == '\n')
-                        .map(|(position, _)| position + 1),
-                )
-                .collect(),
-            char_starts: text.char_indices().map(|(offset, _)| offset).collect(),
+            line_starts,
+            char_starts,
         }
     }
 
