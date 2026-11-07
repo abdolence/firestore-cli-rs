@@ -99,9 +99,12 @@ impl Display for SampleSize {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 pub struct DescribeTarget {
+    #[arg(help = "Collection path, such as `books` or `users/alice/orders`")]
     pub collection: CollectionPath,
+
+    #[arg(long, default_value_t = SampleSize::default(), help = "How many documents to sample")]
     pub sample: SampleSize,
 }
 

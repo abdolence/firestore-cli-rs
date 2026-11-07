@@ -12,7 +12,6 @@ mod tokens;
 use args::{CliArgs, CliCommand, SqlArgs};
 use clap::Parser;
 use connection::Connection;
-use describe::DescribeTarget;
 use errors::{FsqError, FsqResult, ReadScript};
 use meta::Switch;
 use render::{ExpandedMode, Output};
@@ -88,13 +87,10 @@ async fn run(args: CliArgs) -> FsqResult<()> {
                 }
             }
         }
-        CliCommand::Describe(describe) => {
+        CliCommand::Describe(target) => {
             let connection = Connection::open(args.project, args.database).await?;
             Session::new(connection, settings, Interaction::Script)
-                .describe(&DescribeTarget {
-                    collection: describe.collection,
-                    sample: describe.sample,
-                })
+                .describe(&target)
                 .await
         }
     }

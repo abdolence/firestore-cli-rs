@@ -1,5 +1,5 @@
 use crate::connection::{DatabaseId, ProjectId};
-use crate::describe::{CollectionPath, SampleSize};
+use crate::describe::DescribeTarget;
 use crate::render::OutputFormat;
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
@@ -51,7 +51,7 @@ pub enum CliCommand {
     #[command(
         about = "List the field paths of a collection, with their types, % present and an example value"
     )]
-    Describe(DescribeArgs),
+    Describe(DescribeTarget),
 }
 
 #[derive(Args, Debug, Default)]
@@ -70,13 +70,4 @@ pub struct SqlArgs {
         help = "Run the statements of this file, one at a time, and exit"
     )]
     pub file: Option<PathBuf>,
-}
-
-#[derive(Args, Debug)]
-pub struct DescribeArgs {
-    #[arg(help = "Collection path, such as `books` or `users/alice/orders`")]
-    pub collection: CollectionPath,
-
-    #[arg(long, default_value_t = SampleSize::default(), help = "How many documents to sample")]
-    pub sample: SampleSize,
 }
