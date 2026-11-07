@@ -1,5 +1,5 @@
 use crate::connection::{Connection, EditionStatus};
-use crate::errors::{FsqError, FsqResult};
+use crate::errors::{FsqError, FsqResult, InvalidCollectionPath, InvalidSampleSize};
 use crate::render::{Cell, Grid, ValueKind};
 use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
@@ -11,6 +11,7 @@ use firestore::{
 use futures::StreamExt;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
+use std::num::NonZeroU32;
 use std::str::FromStr;
 
 /// A collection by its path from the documents root: `books`, or `users/alice/orders` for a
@@ -35,9 +36,11 @@ impl FromStr for CollectionPath {
     type Err = FsqError;
 
     fn from_str(path: &str) -> FsqResult<Self> {
-        let invalid = |reason| FsqError::InvalidCollectionPath {
-            path: path.to_string(),
-            reason,
+        let invalid = |reason| {
+            FsqError::InvalidCollectionPath(InvalidCollectionPath {
+                path: path.to_string(),
+                reason,
+            })
         };
         if path.split('/').any(str::is_empty) {
             return Err(invalid("a segment is empty"));
@@ -68,17 +71,17 @@ impl Display for CollectionPath {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SampleSize(u32);
+pub struct SampleSize(NonZeroU32);
 
 impl SampleSize {
     pub fn documents(self) -> u32 {
-        self.0
+        self.0.get()
     }
 }
 
 impl Default for SampleSize {
     fn default() -> Self {
-        Self(500)
+        Self(NonZeroU32::new(500).expect("500 is not zero"))
     }
 }
 
@@ -86,17 +89,12 @@ impl FromStr for SampleSize {
     type Err = FsqError;
 
     fn from_str(value: &str) -> FsqResult<Self> {
-        match value.parse::<u32>() {
-            Ok(0) => Err(FsqError::InvalidSampleSize {
+        value.parse().map(Self).map_err(|source| {
+            FsqError::InvalidSampleSize(InvalidSampleSize {
                 value: value.to_string(),
-                reason: "a sample reads at least one document".to_string(),
-            }),
-            Ok(size) => Ok(Self(size)),
-            Err(error) => Err(FsqError::InvalidSampleSize {
-                value: value.to_string(),
-                reason: error.to_string(),
-            }),
-        }
+                source,
+            })
+        })
     }
 }
 
@@ -340,11 +338,11 @@ mod tests {
         );
         assert!(matches!(
             "users/alice".parse::<CollectionPath>(),
-            Err(FsqError::InvalidCollectionPath { .. })
+            Err(FsqError::InvalidCollectionPath(_))
         ));
         assert!(matches!(
             "users//orders".parse::<CollectionPath>(),
-            Err(FsqError::InvalidCollectionPath { .. })
+            Err(FsqError::InvalidCollectionPath(_))
         ));
     }
 }

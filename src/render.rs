@@ -16,6 +16,7 @@ pub use output::*;
 pub use plan::*;
 pub use value::*;
 
+use crate::errors::UnknownChoice;
 use clap::ValueEnum;
 use console::Style;
 use std::str::FromStr;
@@ -35,14 +36,14 @@ pub enum ExpandedMode {
 }
 
 impl FromStr for ExpandedMode {
-    type Err = ();
+    type Err = UnknownChoice;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.to_ascii_lowercase().as_str() {
             "on" => Ok(Self::On),
             "off" => Ok(Self::Off),
             "auto" => Ok(Self::Auto),
-            _ => Err(()),
+            _ => Err(UnknownChoice(value.to_string())),
         }
     }
 }

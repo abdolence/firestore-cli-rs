@@ -1,6 +1,6 @@
 use crate::connection::DatabaseId;
 use crate::describe::{CollectionPath, DescribeTarget, SampleSize};
-use crate::errors::{FsqError, FsqResult};
+use crate::errors::{FsqError, FsqResult, UnknownChoice, UnknownMetaCommand};
 use crate::render::ExpandedMode;
 use std::str::FromStr;
 
@@ -64,27 +64,28 @@ impl FromStr for MetaCommand {
             "\\q" | "\\quit" => no_arguments("\\q", &arguments, Self::Quit)?,
             "\\?" => no_arguments("\\?", &arguments, Self::Help)?,
             "\\l" => no_arguments("\\l", &arguments, Self::ListCollections)?,
-            "\\d" => Self::Describe(describe_target(&arguments)?),
+            "\\d" => Self::Describe(DescribeTarget::try_from(arguments.as_slice())?),
             "\\x" => Self::Expanded(optional_argument("\\x", &arguments, "on, off or auto")?),
             "\\c" => match arguments.as_slice() {
                 [database] => {
                     let Ok(database) = database.parse();
                     Self::Connect(database)
                 }
-                [] => {
-                    return Err(FsqError::MissingMetaArgument {
-                        command: "\\c",
-                        expected: "a database ID",
-                    })
+                [] => return Err(FsqError::missing_meta_argument("\\c", "a database ID")),
+                [_, extra, ..] => {
+                    return Err(FsqError::invalid_meta_argument(
+                        "\\c",
+                        extra,
+                        "one database ID",
+                    ))
                 }
-                [_, extra, ..] => return Err(unexpected("\\c", extra, "one database ID")),
             },
             "\\timing" => Self::Timing(optional_argument("\\timing", &arguments, "on or off")?),
             "\\wait" => Self::Wait(optional_argument("\\wait", &arguments, "on or off")?),
             other => {
-                return Err(FsqError::UnknownMetaCommand {
+                return Err(FsqError::UnknownMetaCommand(UnknownMetaCommand {
                     command: other.to_string(),
-                })
+                }))
             }
         };
         Ok(command)
@@ -92,13 +93,13 @@ impl FromStr for MetaCommand {
 }
 
 impl FromStr for Switch {
-    type Err = ();
+    type Err = UnknownChoice;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.to_ascii_lowercase().as_str() {
             "on" => Ok(Self::On),
             "off" => Ok(Self::Off),
-            _ => Err(()),
+            _ => Err(UnknownChoice(value.to_string())),
         }
     }
 }
@@ -110,7 +111,11 @@ fn no_arguments(
 ) -> FsqResult<MetaCommand> {
     match arguments.first() {
         None => Ok(parsed),
-        Some(argument) => Err(unexpected(command, argument, "no arguments")),
+        Some(argument) => Err(FsqError::invalid_meta_argument(
+            command,
+            argument,
+            "no arguments",
+        )),
     }
 }
 
@@ -124,49 +129,42 @@ fn optional_argument<T: FromStr>(
         [argument] => argument
             .parse()
             .map(Some)
-            .map_err(|_| unexpected(command, argument, expected)),
-        [_, extra, ..] => Err(unexpected(command, extra, expected)),
+            .map_err(|_| FsqError::invalid_meta_argument(command, argument, expected)),
+        [_, extra, ..] => Err(FsqError::invalid_meta_argument(command, extra, expected)),
     }
 }
 
-fn describe_target(arguments: &[&str]) -> FsqResult<DescribeTarget> {
-    let (collection, sample) = match arguments {
-        [collection] => (collection, None),
-        [collection, "--sample", size] => (collection, Some(size)),
-        [] => {
-            return Err(FsqError::MissingMetaArgument {
-                command: "\\d",
-                expected: "a collection",
-            })
-        }
-        [_, argument, ..] => {
-            return Err(unexpected(
-                "\\d",
-                argument,
-                "a collection and an optional --sample N",
-            ))
-        }
-    };
-    Ok(DescribeTarget {
-        collection: collection.parse::<CollectionPath>()?,
-        sample: sample
-            .map(|size| size.parse::<SampleSize>())
-            .transpose()?
-            .unwrap_or_default(),
-    })
-}
+impl TryFrom<&[&str]> for DescribeTarget {
+    type Error = FsqError;
 
-fn unexpected(command: &'static str, argument: &str, expected: &'static str) -> FsqError {
-    FsqError::InvalidMetaArgument {
-        command,
-        argument: argument.to_string(),
-        expected,
+    /// The arguments of `\d`: a collection and an optional `--sample N`.
+    fn try_from(arguments: &[&str]) -> FsqResult<Self> {
+        let (collection, sample) = match arguments {
+            [collection] => (collection, None),
+            [collection, "--sample", size] => (collection, Some(size)),
+            [] => return Err(FsqError::missing_meta_argument("\\d", "a collection")),
+            [_, argument, ..] => {
+                return Err(FsqError::invalid_meta_argument(
+                    "\\d",
+                    argument,
+                    "a collection and an optional --sample N",
+                ))
+            }
+        };
+        Ok(Self {
+            collection: collection.parse::<CollectionPath>()?,
+            sample: sample
+                .map(|size| size.parse::<SampleSize>())
+                .transpose()?
+                .unwrap_or_default(),
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::errors::{InvalidMetaArgument, MissingMetaArgument};
 
     fn parsed(line: &str) -> MetaCommand {
         line.parse().expect(line)
@@ -206,9 +204,9 @@ mod tests {
     #[test]
     fn a_wrong_argument_names_the_command_and_the_argument() {
         match "\\x sideways".parse::<MetaCommand>() {
-            Err(FsqError::InvalidMetaArgument {
+            Err(FsqError::InvalidMetaArgument(InvalidMetaArgument {
                 command, argument, ..
-            }) => {
+            })) => {
                 assert_eq!(command, "\\x");
                 assert_eq!(argument, "sideways");
             }
@@ -216,11 +214,14 @@ mod tests {
         }
         assert!(matches!(
             "\\c".parse::<MetaCommand>(),
-            Err(FsqError::MissingMetaArgument { command: "\\c", .. })
+            Err(FsqError::MissingMetaArgument(MissingMetaArgument {
+                command: "\\c",
+                ..
+            }))
         ));
         assert!(matches!(
             "\\frobnicate".parse::<MetaCommand>(),
-            Err(FsqError::UnknownMetaCommand { command }) if command == "\\frobnicate"
+            Err(FsqError::UnknownMetaCommand(UnknownMetaCommand { command })) if command == "\\frobnicate"
         ));
     }
 }

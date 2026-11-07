@@ -1,5 +1,5 @@
 use super::Theme;
-use crate::errors::{FsqError, FsqResult};
+use crate::errors::{FsqError, FsqResult, PagerFailed};
 use console::{Key, Term};
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -46,7 +46,7 @@ impl Output {
             if let Some(command) = pager_command() {
                 match run_pager(&command, text) {
                     // No such pager installed, as `less` on Windows: print as without one.
-                    Err(FsqError::Pager { source, .. })
+                    Err(FsqError::PagerFailed(PagerFailed { source, .. }))
                         if source.kind() == std::io::ErrorKind::NotFound => {}
                     shown => return shown,
                 }
@@ -101,9 +101,11 @@ fn pager_command() -> Option<String> {
 }
 
 fn run_pager(command: &str, text: &str) -> FsqResult<()> {
-    let pager_error = |source| FsqError::Pager {
-        command: command.to_string(),
-        source,
+    let pager_error = |source| {
+        FsqError::PagerFailed(PagerFailed {
+            command: command.to_string(),
+            source,
+        })
     };
     let mut words = command.split_whitespace();
     let program = words.next().unwrap_or(DEFAULT_PAGER);

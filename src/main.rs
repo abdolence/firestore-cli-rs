@@ -13,7 +13,7 @@ use args::{CliArgs, CliCommand, SqlArgs};
 use clap::Parser;
 use connection::{Connection, ProjectId};
 use describe::DescribeTarget;
-use errors::{FsqError, FsqResult};
+use errors::{FsqError, FsqResult, ReadScript};
 use meta::Switch;
 use render::ExpandedMode;
 use session::{Interaction, Session, Settings};
@@ -70,7 +70,7 @@ async fn run(args: CliArgs) -> FsqResult<()> {
                 (Some(statements), _) => Some(statements),
                 (None, Some(path)) => Some(
                     std::fs::read_to_string(&path)
-                        .map_err(|source| FsqError::ReadScript { path, source })?,
+                        .map_err(|source| FsqError::ReadScript(ReadScript { path, source }))?,
                 ),
                 (None, None) => None,
             };

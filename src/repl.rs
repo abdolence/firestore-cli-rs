@@ -1,7 +1,7 @@
 mod complete;
 mod highlight;
 
-use crate::errors::{FsqError, FsqResult};
+use crate::errors::{FsqError, FsqResult, InputsFailed};
 use crate::script::Script;
 use crate::session::{Flow, Session};
 use complete::SqlCompleter;
@@ -126,7 +126,7 @@ pub async fn run_piped(mut session: Session, buffer: &str) -> FsqResult<()> {
     session.greet()?;
     match run_buffer(&mut session, buffer).await?.failed {
         0 => Ok(()),
-        failed => Err(FsqError::InputsFailed { failed }),
+        failed => Err(FsqError::InputsFailed(InputsFailed { failed })),
     }
 }
 
