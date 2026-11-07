@@ -199,8 +199,13 @@ impl Description {
             let summary = self.fields.entry(path.clone()).or_default();
             summary.types.insert(type_name(value));
             summary.documents_with_it += 1;
-            let is_null = matches!(value.value_type, Some(ValueType::NullValue(_)) | None);
-            if summary.example.is_none() || (!is_null && summary.example_is_null()) {
+            let is_null =
+                |value: &Value| matches!(value.value_type, Some(ValueType::NullValue(_)) | None);
+            if summary
+                .example
+                .as_ref()
+                .is_none_or(|example| is_null(example) && !is_null(value))
+            {
                 summary.example = Some(value.clone());
             }
             if let Some(ValueType::MapValue(map)) = &value.value_type {
@@ -249,15 +254,6 @@ fn type_name(value: &Value) -> &'static str {
             | ValueType::FunctionValue(_)
             | ValueType::PipelineValue(_),
         ) => "expression",
-    }
-}
-
-impl FieldPathSummary {
-    fn example_is_null(&self) -> bool {
-        matches!(
-            self.example.as_ref().map(|value| &value.value_type),
-            Some(Some(ValueType::NullValue(_)) | None)
-        )
     }
 }
 
