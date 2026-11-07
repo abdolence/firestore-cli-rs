@@ -3,8 +3,8 @@ use crate::errors::FsqResult;
 use crate::meta::Switch;
 use crate::render::{counted, Footer, FooterNote, Grid, OutputFormat, QueryPlan};
 use firestore::{
-    FirestoreDocument, FirestoreExpr, FirestorePipelineStage, FirestoreResult,
-    FirestoreSqlStatement, FirestoreWithPipelineMetadata,
+    FirestoreDocument, FirestoreExpr, FirestorePipelineExplainStats, FirestorePipelineStage,
+    FirestoreResult, FirestoreSqlStatement, FirestoreWithPipelineMetadata,
 };
 use futures::stream::{BoxStream, Peekable};
 use futures::StreamExt;
@@ -105,12 +105,16 @@ impl<'b> RowPages<'b> {
                 Some(item) => {
                     let item = item?;
                     self.first_response.get_or_insert_with(Instant::now);
-                    if let Some(stats) = item.metadata.explain_stats {
-                        self.plan = Some(QueryPlan::new(stats.text));
-                    }
+                    self.keep_plan(item.metadata.explain_stats);
                     documents.extend(item.document);
                 }
             }
+        }
+    }
+
+    fn keep_plan(&mut self, explain_stats: Option<FirestorePipelineExplainStats>) {
+        if let Some(stats) = explain_stats {
+            self.plan = Some(QueryPlan::new(stats.text));
         }
     }
 
@@ -120,9 +124,7 @@ impl<'b> RowPages<'b> {
                 None => return false,
                 Some(Ok(item)) if item.document.is_none() => {
                     if let Some(Ok(item)) = self.rows.next().await {
-                        if let Some(stats) = item.metadata.explain_stats {
-                            self.plan = Some(QueryPlan::new(stats.text));
-                        }
+                        self.keep_plan(item.metadata.explain_stats);
                     }
                 }
                 // A document, or an error that the next page reports.
@@ -185,7 +187,7 @@ impl Session {
                     text.push_str(&view.grids(&[("rows", &grid), ("plan", &Grid::plan(plan))]));
                 }
                 (Some(plan), true) => {
-                    if grid.len() > 0 {
+                    if !grid.is_empty() {
                         text.push_str(&view.grid(&grid));
                     }
                     text.push_str(&view.plan(plan));
@@ -325,9 +327,13 @@ mod tests {
     }
 
     #[test]
-    fn the_shape_of_a_select_follows_its_select_list_and_its_limit() {
+    fn the_shape_follows_the_select_list_and_the_limit_and_never_pages_an_explain() {
         let limited = FirestoreSqlStatement::Query(select_with_fields(Some(10)));
         let unlimited = FirestoreSqlStatement::Query(select_with_fields(None));
+        let explain = FirestoreSqlStatement::Explain(FirestoreSqlExplain::new(
+            select_with_fields(None),
+            FirestoreExplainOptions::new().with_analyze(true),
+        ));
 
         assert_eq!(
             ResultShape::from(&limited),
@@ -337,15 +343,6 @@ mod tests {
             }
         );
         assert!(ResultShape::from(&unlimited).paged);
-    }
-
-    #[test]
-    fn an_explain_is_never_paged_because_its_plan_arrives_with_the_last_row() {
-        let explain = FirestoreSqlStatement::Explain(FirestoreSqlExplain::new(
-            select_with_fields(None),
-            FirestoreExplainOptions::new().with_analyze(true),
-        ));
-
         assert!(!ResultShape::from(&explain).paged);
     }
 }

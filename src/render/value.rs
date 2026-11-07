@@ -7,7 +7,7 @@ use firestore::timestamp_utils::from_timestamp;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter, Write};
 
-pub const CELL_TEXT_LIMIT: usize = 40;
+const CELL_TEXT_LIMIT: usize = 40;
 
 impl View<'_> {
     pub fn compact_value(&self, value: &Value) -> String {

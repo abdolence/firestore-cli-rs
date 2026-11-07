@@ -15,8 +15,9 @@ impl SqlCompleter {
         Self { vocabulary }
     }
 
-    fn candidates(&self, line: &str, word: &str) -> Vec<String> {
-        let before_word = line[..line.len() - word.len()].trim_end();
+    fn candidates(&self, line: &str, word_start: usize) -> Vec<String> {
+        let (before_word, word) = line.split_at(word_start);
+        let before_word = before_word.trim_end();
         if before_word.is_empty() && word.starts_with('\\') {
             return META_COMMANDS
                 .iter()
@@ -62,7 +63,7 @@ impl Completer for SqlCompleter {
             .map_or(0, |position| position + 1);
         let word = &line[start..];
         let prefix = word.trim_start_matches('`').to_ascii_lowercase();
-        self.candidates(line, word)
+        self.candidates(line, start)
             .into_iter()
             .filter(|candidate| {
                 candidate

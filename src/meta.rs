@@ -57,7 +57,7 @@ impl MetaCommandHelp {
     }
 }
 
-pub const META_COMMANDS: [MetaCommandHelp; 8] = [
+pub const META_COMMANDS: &[MetaCommandHelp] = &[
     MetaCommandHelp {
         usage: "\\l",
         summary: "list the collections under the root, as SHOW COLLECTIONS",
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn every_listed_command_is_one_the_parser_knows() {
-        for command in &META_COMMANDS {
+        for command in META_COMMANDS {
             assert!(!matches!(
                 command.name().parse::<MetaCommand>(),
                 Err(FsqError::UnknownMetaCommand(_))

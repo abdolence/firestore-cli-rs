@@ -56,6 +56,10 @@ impl Grid {
         self.rows.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
     /// One row per document, under the union of their fields. Firestore returns a document's
     /// fields unordered, so the columns come in `order`, the order the statement selects them in,
     /// and then by name, with the document name first when the documents have one.
@@ -108,7 +112,7 @@ impl View<'_> {
         match self.format {
             OutputFormat::Table if grids.len() == 1 => self.grid_text(grids[0].1),
             OutputFormat::Table => {
-                let shown: Vec<_> = grids.iter().filter(|(_, grid)| grid.len() > 0).collect();
+                let shown: Vec<_> = grids.iter().filter(|(_, grid)| !grid.is_empty()).collect();
                 let mut out = String::new();
                 for (title, grid) in &shown {
                     if shown.len() > 1 {
