@@ -70,9 +70,13 @@ impl SampleSize {
     }
 }
 
+impl SampleSize {
+    const DEFAULT: NonZeroU32 = NonZeroU32::new(500).unwrap();
+}
+
 impl Default for SampleSize {
     fn default() -> Self {
-        Self(NonZeroU32::new(500).expect("500 is not zero"))
+        Self(Self::DEFAULT)
     }
 }
 
