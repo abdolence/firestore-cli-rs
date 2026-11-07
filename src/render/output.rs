@@ -41,8 +41,8 @@ impl Output {
             return Ok(());
         }
         if self.is_terminal && !self.fits_height(text) {
-            if let Some(command) = pager_command() {
-                match run_pager(&command, text) {
+            if let Some(pager) = Pager::from_env() {
+                match pager.show(text) {
                     // No such pager installed, as `less` on Windows: print as without one.
                     Err(FsqError::PagerFailed(PagerFailed { source, .. }))
                         if source.kind() == std::io::ErrorKind::NotFound => {}
@@ -93,36 +93,44 @@ impl Output {
     }
 }
 
-/// `$PAGER`, or `less -RFX` when it is unset. An empty `$PAGER` turns the pager off.
-fn pager_command() -> Option<String> {
-    match std::env::var("PAGER") {
-        Ok(pager) if pager.trim().is_empty() => None,
-        Ok(pager) => Some(pager),
-        Err(_) => Some(DEFAULT_PAGER.to_string()),
-    }
+/// The command that results taller than the terminal are piped through.
+struct Pager {
+    command: String,
 }
 
-fn run_pager(command: &str, text: &str) -> FsqResult<()> {
-    let pager_error = |source| {
-        FsqError::PagerFailed(PagerFailed {
-            command: command.to_string(),
-            source,
-        })
-    };
-    let mut words = command.split_whitespace();
-    let program = words.next().unwrap_or(DEFAULT_PAGER);
-    let mut child = Command::new(program)
-        .args(words)
-        .stdin(Stdio::piped())
-        .spawn()
-        .map_err(pager_error)?;
-    if let Some(mut stdin) = child.stdin.take() {
-        match stdin.write_all(text.as_bytes()) {
-            // The pager quit before reading everything, as `q` in less does.
-            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
-            other => other.map_err(pager_error)?,
-        }
+impl Pager {
+    /// `$PAGER`, or `less -RFX` when it is unset. An empty `$PAGER` turns the pager off.
+    fn from_env() -> Option<Self> {
+        let command = match std::env::var("PAGER") {
+            Ok(pager) if pager.trim().is_empty() => return None,
+            Ok(pager) => pager,
+            Err(_) => DEFAULT_PAGER.to_string(),
+        };
+        Some(Self { command })
     }
-    child.wait().map_err(pager_error)?;
-    Ok(())
+
+    fn show(&self, text: &str) -> FsqResult<()> {
+        let pager_error = |source| {
+            FsqError::PagerFailed(PagerFailed {
+                command: self.command.clone(),
+                source,
+            })
+        };
+        let mut words = self.command.split_whitespace();
+        let program = words.next().unwrap_or(DEFAULT_PAGER);
+        let mut child = Command::new(program)
+            .args(words)
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(pager_error)?;
+        if let Some(mut stdin) = child.stdin.take() {
+            match stdin.write_all(text.as_bytes()) {
+                // The pager quit before reading everything, as `q` in less does.
+                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
+                other => other.map_err(pager_error)?,
+            }
+        }
+        child.wait().map_err(pager_error)?;
+        Ok(())
+    }
 }
