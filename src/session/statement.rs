@@ -1,4 +1,3 @@
-use super::rows::{ResultShape, RowsOf};
 use super::{interruptible, Session};
 use crate::errors::{FsqError, FsqResult};
 use crate::meta::Switch;
@@ -14,49 +13,12 @@ use std::time::{Duration, Instant};
 /// takes minutes even on an empty collection; Ctrl-C stops the wait sooner.
 const INDEX_WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
-enum StatementKind {
-    Query(ResultShape),
-    Explain(ResultShape),
-    Write,
-    /// The path of the document `IN` names, `None` for the root.
-    ShowCollections(Option<String>),
-    ShowIndexes,
-    CreateIndex(FirestoreCollectionId),
-    DropIndex,
-    AlterCollection(FirestoreCollectionId),
-}
-
-impl StatementKind {
-    fn new(statement: &FirestoreSqlStatement, documents_path: &str) -> Self {
-        match statement {
-            FirestoreSqlStatement::Query(pipeline) => Self::Query(ResultShape::from(pipeline)),
-            FirestoreSqlStatement::Explain(explain) => {
-                Self::Explain(ResultShape::from(&explain.pipeline))
-            }
-            FirestoreSqlStatement::Write(_) => Self::Write,
-            FirestoreSqlStatement::ShowCollections(params) => Self::ShowCollections(
-                params
-                    .parent
-                    .as_deref()
-                    .map(|parent| relative_name(documents_path, parent).to_string()),
-            ),
-            FirestoreSqlStatement::ShowIndexes(_) => Self::ShowIndexes,
-            FirestoreSqlStatement::CreateIndex(create) => {
-                Self::CreateIndex(create.definition.collection_group.clone())
-            }
-            FirestoreSqlStatement::DropIndex(_) => Self::DropIndex,
-            FirestoreSqlStatement::AlterCollection(update) => {
-                Self::AlterCollection(update.collection_group.clone())
-            }
-        }
-    }
-
-    /// The collection group whose build a statement starts, for `\wait` to wait on.
-    fn builds(&self) -> Option<&FirestoreCollectionId> {
-        match self {
-            Self::CreateIndex(group) | Self::AlterCollection(group) => Some(group),
-            _ => None,
-        }
+/// The collection group whose index build a statement starts, for `\wait` to wait on.
+fn index_build(statement: &FirestoreSqlStatement) -> Option<&FirestoreCollectionId> {
+    match statement {
+        FirestoreSqlStatement::CreateIndex(create) => Some(&create.definition.collection_group),
+        FirestoreSqlStatement::AlterCollection(update) => Some(&update.collection_group),
+        _ => None,
     }
 }
 
@@ -66,14 +28,13 @@ impl Session {
         let options = FirestoreSqlOptions::new().allow_index_statements();
         let statement =
             FirestoreSqlStatement::translate(&db, sql, &FirestoreSqlParameters::new(), &options)?;
-        let kind = StatementKind::new(&statement, db.get_documents_path());
         let mut builder = db.fluent().sql(sql).options(options);
-        let waits_for = kind.builds().filter(|_| self.settings.wait == Switch::On);
+        let waits_for = index_build(&statement).filter(|_| self.settings.wait == Switch::On);
         if waits_for.is_some() {
             builder = builder.wait_until_ready(INDEX_WAIT_TIMEOUT);
         }
-        let analyzes =
-            matches!(kind, StatementKind::Query(_)) && self.settings.timing == Switch::On;
+        let analyzes = matches!(statement, FirestoreSqlStatement::Query(_))
+            && self.settings.timing == Switch::On;
         if analyzes {
             builder =
                 builder.explain_with_options(FirestoreExplainOptions::new().with_analyze(true));
@@ -86,32 +47,21 @@ impl Session {
         }
         match outcome {
             Err(FsqError::Interrupted) => {
-                self.explain_interruption(&kind, waits_for)?;
+                self.explain_interruption(&statement, waits_for)?;
                 Err(FsqError::Interrupted)
             }
-            outcome => self.show_outcome(outcome??, &kind, started).await,
+            outcome => self.show_outcome(outcome??, &statement, started).await,
         }
     }
 
     async fn show_outcome(
         &mut self,
         outcome: FirestoreSqlOutcome<'_>,
-        kind: &StatementKind,
+        statement: &FirestoreSqlStatement,
         started: Instant,
     ) -> FsqResult<()> {
         match outcome {
-            FirestoreSqlOutcome::Rows(rows) => match kind {
-                StatementKind::Explain(shape) => {
-                    self.show_rows(rows, shape, RowsOf::Explain, started).await
-                }
-                StatementKind::Query(shape) => {
-                    self.show_rows(rows, shape, RowsOf::Select, started).await
-                }
-                _ => {
-                    self.show_rows(rows, &ResultShape::default(), RowsOf::Select, started)
-                        .await
-                }
-            },
+            FirestoreSqlOutcome::Rows(rows) => self.show_rows(rows, statement, started).await,
             FirestoreSqlOutcome::Written(written) => {
                 let text = match self.settings.format {
                     OutputFormat::Table => self.done_line(
@@ -130,8 +80,12 @@ impl Session {
                 self.output.print(&text)
             }
             FirestoreSqlOutcome::Collections(collection_ids) => {
-                let parent = match kind {
-                    StatementKind::ShowCollections(parent) => parent.as_deref(),
+                let parent = match statement {
+                    FirestoreSqlStatement::ShowCollections(params) => {
+                        params.parent.as_deref().map(|parent| {
+                            relative_name(self.connection.db.get_documents_path(), parent)
+                        })
+                    }
                     _ => None,
                 };
                 if parent.is_none() {
@@ -225,14 +179,14 @@ impl Session {
 
     fn explain_interruption(
         &self,
-        kind: &StatementKind,
+        statement: &FirestoreSqlStatement,
         waited_for: Option<&FirestoreCollectionId>,
     ) -> FsqResult<()> {
         if let Some(group) = waited_for {
             self.output.notice(&format!(
                 "Stopped waiting. The build goes on in Firestore; SHOW INDEXES FROM {group} shows its state."
             ))?;
-        } else if matches!(kind, StatementKind::Write) {
+        } else if matches!(statement, FirestoreSqlStatement::Write(_)) {
             self.output
                 .notice("A write that reached Firestore before Ctrl-C may still apply.")?;
         }

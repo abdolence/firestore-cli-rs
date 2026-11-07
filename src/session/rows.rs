@@ -3,13 +3,13 @@ use crate::errors::FsqResult;
 use crate::meta::Switch;
 use crate::render::{Counted, Footer, FooterNote, Grid, OutputFormat, QueryPlan};
 use firestore::{
-    FirestoreDocument, FirestoreExpr, FirestorePipeline, FirestorePipelineStage, FirestoreResult,
-    FirestoreWithPipelineMetadata,
+    FirestoreDocument, FirestoreExpr, FirestorePipelineStage, FirestoreResult,
+    FirestoreSqlStatement, FirestoreWithPipelineMetadata,
 };
 use futures::stream::{BoxStream, Peekable};
 use futures::StreamExt;
 use std::pin::Pin;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 type RowStream<'b> =
     BoxStream<'b, FirestoreResult<FirestoreWithPipelineMetadata<FirestoreDocument>>>;
@@ -19,22 +19,23 @@ type RowStream<'b> =
 const PAGE_CHROME_LINES: usize = 7;
 const MIN_PAGE_ROWS: usize = 10;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RowsOf {
-    Select,
-    Explain,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct ResultShape {
     /// The fields of the last stage that names its fields, in its order.
     column_order: Vec<String>,
-    /// A statement with a `LIMIT` shows all its rows; one without shows a page at a time.
-    has_limit: bool,
+    /// Whether the REPL shows the rows a page at a time: a `SELECT` without a `LIMIT` does, and an
+    /// `EXPLAIN` does not.
+    paged: bool,
 }
 
-impl From<&FirestorePipeline> for ResultShape {
-    fn from(pipeline: &FirestorePipeline) -> Self {
+impl From<&FirestoreSqlStatement> for ResultShape {
+    fn from(statement: &FirestoreSqlStatement) -> Self {
+        let (pipeline, pageable) = match statement {
+            FirestoreSqlStatement::Query(pipeline) => (pipeline, true),
+            // The plan comes with the last item, which a reader who stops paging never reaches.
+            FirestoreSqlStatement::Explain(explain) => (&explain.pipeline, false),
+            _ => return Self::default(),
+        };
         let column_order = pipeline
             .stages
             .iter()
@@ -56,10 +57,11 @@ impl From<&FirestorePipeline> for ResultShape {
             .unwrap_or_default();
         Self {
             column_order,
-            has_limit: pipeline
-                .stages
-                .iter()
-                .any(|stage| matches!(stage, FirestorePipelineStage::Limit(_))),
+            paged: pageable
+                && !pipeline
+                    .stages
+                    .iter()
+                    .any(|stage| matches!(stage, FirestorePipelineStage::Limit(_))),
         }
     }
 }
@@ -137,57 +139,68 @@ impl Session {
     pub(super) async fn show_rows(
         &mut self,
         rows: RowStream<'_>,
-        shape: &ResultShape,
-        rows_of: RowsOf,
+        statement: &FirestoreSqlStatement,
         started: Instant,
     ) -> FsqResult<()> {
-        let page_size = self.page_size(shape);
+        let shape = ResultShape::from(statement);
+        let explains = matches!(statement, FirestoreSqlStatement::Explain(_));
+        let page_size = self.page_size(&shape);
         let mut pages = RowPages::new(rows);
         let mut shown = 0;
+        let mut waiting_for_reader = Duration::ZERO;
         loop {
             let page = interruptible(pages.next_page(page_size)).await??;
             shown += page.documents.len();
             let grid = Grid::from_documents(page.documents, &shape.column_order);
             self.remember_fields(&grid);
             let view = self.view();
+            let elapsed = started.elapsed().saturating_sub(waiting_for_reader);
             if page.more {
                 let footer = Footer {
                     count: shown,
                     counted: Counted::Rows,
-                    elapsed: started.elapsed(),
+                    elapsed,
                     notes: vec![FooterNote::MorePages],
                 };
                 self.output
                     .print(&format!("{}{}", view.grid(&grid), view.footer(&footer)))?;
-                if self.output.ask_for_more(&self.theme)? {
+                let asked = Instant::now();
+                let continues = self.output.ask_for_more(&self.theme)?;
+                waiting_for_reader += asked.elapsed();
+                if continues {
                     continue;
+                }
+                if self.settings.timing == Switch::On {
+                    self.output.notice(
+                        "Stopped before the last row, which carries the execution stats.",
+                    )?;
                 }
                 return Ok(());
             }
             let footer = Footer {
                 count: shown,
                 counted: Counted::Rows,
-                elapsed: started.elapsed(),
+                elapsed,
                 notes: self.timing_notes(pages.first_response, started, pages.plan.as_ref()),
             };
             let mut text = String::new();
-            match (&pages.plan, rows_of) {
-                (Some(plan), RowsOf::Explain) if self.settings.format != OutputFormat::Table => {
+            match (&pages.plan, explains) {
+                (Some(plan), true) if self.settings.format != OutputFormat::Table => {
                     text.push_str(&view.grids(&[("rows", &grid), ("plan", &Grid::plan(plan))]));
                 }
-                (Some(plan), RowsOf::Explain) => {
+                (Some(plan), true) => {
                     if grid.len() > 0 {
                         text.push_str(&view.grid(&grid));
                     }
                     text.push_str(&view.plan(plan));
                 }
-                (None, RowsOf::Explain) => {
+                (None, true) => {
                     self.output.notice(
                         "Firestore returned no plan; the Firestore emulator returns none.",
                     )?;
                     text.push_str(&view.grid(&grid));
                 }
-                (_, RowsOf::Select) => text.push_str(&view.grid(&grid)),
+                (_, false) => text.push_str(&view.grid(&grid)),
             }
             text.push_str(&view.footer(&footer));
             return self.output.print(&text);
@@ -197,7 +210,7 @@ impl Session {
     fn page_size(&self, shape: &ResultShape) -> Option<usize> {
         let pages = self.interaction == Interaction::Repl
             && self.settings.format == OutputFormat::Table
-            && !shape.has_limit;
+            && shape.paged;
         let height = self.output.height().filter(|_| pages)?;
         Some(height.saturating_sub(PAGE_CHROME_LINES).max(MIN_PAGE_ROWS))
     }
@@ -224,9 +237,10 @@ mod tests {
     use super::*;
     use crate::render::fixtures::{document, string};
     use firestore::{
-        FirestoreCollectionSource, FirestoreFieldsStage, FirestoreFunction, FirestoreLimitStage,
-        FirestorePipelineExplainStats, FirestorePipelineMetadata, FirestorePipelineSource,
-        FirestoreSelection,
+        FirestoreCollectionSource, FirestoreExplainOptions, FirestoreFieldsStage,
+        FirestoreFunction, FirestoreLimitStage, FirestorePipeline, FirestorePipelineExplainStats,
+        FirestorePipelineMetadata, FirestorePipelineSource, FirestoreSelection,
+        FirestoreSqlExplain,
     };
 
     fn row(id: &str) -> FirestoreResult<FirestoreWithPipelineMetadata<FirestoreDocument>> {
@@ -288,8 +302,7 @@ mod tests {
         assert_eq!(pages.plan, Some(QueryPlan::new("Tree:".to_string())));
     }
 
-    #[test]
-    fn the_shape_of_a_select_follows_its_select_list_and_its_limit() {
+    fn select_with_fields(limit: Option<u32>) -> FirestorePipeline {
         let pipeline = FirestorePipeline::new(FirestorePipelineSource::Collection(
             FirestoreCollectionSource::new("books".to_string()),
         ))
@@ -306,15 +319,37 @@ mod tests {
                     vec![],
                 ))),
             ],
-        )))
-        .with_stage(FirestorePipelineStage::Limit(FirestoreLimitStage::new(10)));
+        )));
+        match limit {
+            Some(limit) => pipeline.with_stage(FirestorePipelineStage::Limit(
+                FirestoreLimitStage::new(limit),
+            )),
+            None => pipeline,
+        }
+    }
+
+    #[test]
+    fn the_shape_of_a_select_follows_its_select_list_and_its_limit() {
+        let limited = FirestoreSqlStatement::Query(select_with_fields(Some(10)));
+        let unlimited = FirestoreSqlStatement::Query(select_with_fields(None));
 
         assert_eq!(
-            ResultShape::from(&pipeline),
+            ResultShape::from(&limited),
             ResultShape {
                 column_order: vec!["title".to_string(), "shouted".to_string()],
-                has_limit: true,
+                paged: false,
             }
         );
+        assert!(ResultShape::from(&unlimited).paged);
+    }
+
+    #[test]
+    fn an_explain_is_never_paged_because_its_plan_arrives_with_the_last_row() {
+        let explain = FirestoreSqlStatement::Explain(FirestoreSqlExplain::new(
+            select_with_fields(None),
+            FirestoreExplainOptions::new().with_analyze(true),
+        ));
+
+        assert!(!ResultShape::from(&explain).paged);
     }
 }
