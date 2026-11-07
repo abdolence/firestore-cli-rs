@@ -1,11 +1,8 @@
 use super::SQL_KEYWORDS;
+use crate::meta::META_COMMANDS;
 use crate::session::SharedVocabulary;
 use firestore::FirestoreSqlFieldName;
 use reedline::{Completer, Span, Suggestion};
-
-const META_COMMANDS: &[&str] = &[
-    "\\?", "\\c", "\\d", "\\l", "\\q", "\\timing", "\\wait", "\\x",
-];
 
 const COLLECTION_KEYWORDS: &[&str] = &["FROM", "JOIN", "INTO", "UPDATE", "COLLECTION", "ON", "\\D"];
 
@@ -21,7 +18,10 @@ impl SqlCompleter {
     fn candidates(&self, line: &str, word: &str) -> Vec<String> {
         let before_word = line[..line.len() - word.len()].trim_end();
         if before_word.is_empty() && word.starts_with('\\') {
-            return META_COMMANDS.iter().map(ToString::to_string).collect();
+            return META_COMMANDS
+                .iter()
+                .map(|command| command.name().to_string())
+                .collect();
         }
         let previous = before_word
             .rsplit(|c: char| c.is_whitespace() || c == ',' || c == '(')

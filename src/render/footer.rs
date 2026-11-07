@@ -1,45 +1,26 @@
-use super::{ExecutionStats, OutputFormat, View};
+use super::{counted, ExecutionStats, OutputFormat, View};
 use std::time::Duration;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Counted {
-    Rows,
-    Collections,
-    FieldPaths,
-    Indexes,
-}
-
-impl Counted {
-    fn noun(self, count: usize) -> &'static str {
-        match (self, count) {
-            (Self::Rows, 1) => "row",
-            (Self::Rows, _) => "rows",
-            (Self::Collections, 1) => "collection",
-            (Self::Collections, _) => "collections",
-            (Self::FieldPaths, 1) => "field path",
-            (Self::FieldPaths, _) => "field paths",
-            (Self::Indexes, 1) => "index",
-            (Self::Indexes, _) => "indexes",
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FooterNote {
     /// The rows are the first pages of a statement without a `LIMIT`, and more remain.
     MorePages,
-    Sampled {
-        documents: usize,
-    },
+    Sampled(Sample),
     /// From sending the statement to the first response.
     RoundTrip(Duration),
     Stats(ExecutionStats),
 }
 
+/// The documents a listing was computed from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sample {
+    pub documents: usize,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Footer {
-    pub count: usize,
-    pub counted: Counted,
+    /// What the footer counts, with its noun: `48 rows`.
+    pub counted: String,
     pub elapsed: Duration,
     pub notes: Vec<FooterNote>,
 }
@@ -51,16 +32,16 @@ impl View<'_> {
             return String::new();
         }
         let mut parts = vec![
-            format!("{} {}", footer.count, footer.counted.noun(footer.count)),
+            footer.counted.clone(),
             DurationText(footer.elapsed).to_string(),
         ];
         for note in &footer.notes {
             parts.push(match note {
                 FooterNote::MorePages => "more rows remain".to_string(),
-                FooterNote::Sampled { documents: 1 } => "from a sample of 1 document".to_string(),
-                FooterNote::Sampled { documents } => {
-                    format!("from a sample of {documents} documents")
-                }
+                FooterNote::Sampled(sample) => format!(
+                    "from a sample of {}",
+                    counted(sample.documents, "document", "documents")
+                ),
                 FooterNote::RoundTrip(round_trip) => {
                     format!("round trip {}", DurationText(*round_trip))
                 }
@@ -103,8 +84,7 @@ mod tests {
     fn a_footer_counts_what_was_listed_with_its_time_and_notes() {
         assert_eq!(
             footer_text(Footer {
-                count: 48,
-                counted: Counted::Rows,
+                counted: counted(48, "row", "rows"),
                 elapsed: Duration::from_millis(124),
                 notes: vec![
                     FooterNote::MorePages,
@@ -119,10 +99,9 @@ mod tests {
         );
         assert_eq!(
             footer_text(Footer {
-                count: 1,
-                counted: Counted::FieldPaths,
+                counted: counted(1, "field path", "field paths"),
                 elapsed: Duration::from_millis(2_340),
-                notes: vec![FooterNote::Sampled { documents: 1 }],
+                notes: vec![FooterNote::Sampled(Sample { documents: 1 })],
             }),
             "1 field path · 2.34 s · from a sample of 1 document\n"
         );

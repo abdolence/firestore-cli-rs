@@ -43,15 +43,67 @@ impl std::fmt::Display for Switch {
     }
 }
 
-pub const META_HELP: &str = "\
-\\l                         list the collections under the root, as SHOW COLLECTIONS
-\\d <collection> [--sample N] list a collection's field paths, types, % present and an example
-\\x [on|off|auto]           expanded view, one block per document; auto when a table is too wide
-\\c <database>              connect to another database of the project
-\\timing [on|off]           round trip time and execution stats in the footer
-\\wait [on|off]             wait for CREATE INDEX and ALTER COLLECTION to finish
-\\?                         this help
-\\q                         quit";
+/// A meta-command as the help lists it and the REPL completes it.
+pub struct MetaCommandHelp {
+    pub usage: &'static str,
+    pub summary: &'static str,
+}
+
+impl MetaCommandHelp {
+    pub fn name(&self) -> &'static str {
+        self.usage
+            .split_once(' ')
+            .map_or(self.usage, |(name, _)| name)
+    }
+}
+
+pub const META_COMMANDS: [MetaCommandHelp; 8] = [
+    MetaCommandHelp {
+        usage: "\\l",
+        summary: "list the collections under the root, as SHOW COLLECTIONS",
+    },
+    MetaCommandHelp {
+        usage: "\\d <collection> [--sample N]",
+        summary: "list a collection's field paths, types, % present and an example",
+    },
+    MetaCommandHelp {
+        usage: "\\x [on|off|auto]",
+        summary: "expanded view, one block per document; auto when a table is too wide",
+    },
+    MetaCommandHelp {
+        usage: "\\c <database>",
+        summary: "connect to another database of the project",
+    },
+    MetaCommandHelp {
+        usage: "\\timing [on|off]",
+        summary: "round trip time and execution stats in the footer",
+    },
+    MetaCommandHelp {
+        usage: "\\wait [on|off]",
+        summary: "wait for CREATE INDEX and ALTER COLLECTION to finish",
+    },
+    MetaCommandHelp {
+        usage: "\\?",
+        summary: "this help",
+    },
+    MetaCommandHelp {
+        usage: "\\q",
+        summary: "quit",
+    },
+];
+
+/// The text of `\?`: a line per meta-command, with the summaries in one column.
+pub fn meta_help() -> String {
+    let width = META_COMMANDS
+        .iter()
+        .map(|command| command.usage.len())
+        .max()
+        .unwrap_or_default();
+    META_COMMANDS
+        .iter()
+        .map(|command| format!("{:<width$}  {}\n", command.usage, command.summary))
+        .collect()
+}
 
 impl FromStr for MetaCommand {
     type Err = FsqError;
@@ -223,5 +275,15 @@ mod tests {
             "\\frobnicate".parse::<MetaCommand>(),
             Err(FsqError::UnknownMetaCommand(UnknownMetaCommand { command })) if command == "\\frobnicate"
         ));
+    }
+
+    #[test]
+    fn every_listed_command_is_one_the_parser_knows() {
+        for command in &META_COMMANDS {
+            assert!(!matches!(
+                command.name().parse::<MetaCommand>(),
+                Err(FsqError::UnknownMetaCommand(_))
+            ));
+        }
     }
 }

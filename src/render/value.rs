@@ -1,4 +1,4 @@
-use super::View;
+use super::{counted, View};
 use base64::Engine;
 use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
@@ -21,8 +21,7 @@ impl View<'_> {
             Some(ValueType::ArrayValue(array)) => {
                 let summary = match array.values.len() {
                     0 => "[]".to_string(),
-                    1 => "[1 item]".to_string(),
-                    count => format!("[{count} items]"),
+                    count => format!("[{}]", counted(count, "item", "items")),
                 };
                 theme.nested.apply_to(summary).to_string()
             }
@@ -109,10 +108,10 @@ impl View<'_> {
                 .apply_to(TimestampText(timestamp))
                 .to_string(),
             Some(ValueType::StringValue(text)) => theme.string.apply_to(text).to_string(),
-            Some(ValueType::BytesValue(bytes)) => match bytes.len() {
-                1 => theme.muted.apply_to("1 byte").to_string(),
-                length => theme.muted.apply_to(format!("{length} bytes")).to_string(),
-            },
+            Some(ValueType::BytesValue(bytes)) => theme
+                .muted
+                .apply_to(counted(bytes.len(), "byte", "bytes"))
+                .to_string(),
             Some(ValueType::ReferenceValue(name)) => theme
                 .reference
                 .apply_to(relative_name(self.documents_path, name))

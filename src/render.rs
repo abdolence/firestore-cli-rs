@@ -21,6 +21,19 @@ use clap::ValueEnum;
 use console::Style;
 use std::str::FromStr;
 
+/// `count` and the noun that fits it: `1 row`, `2 rows`.
+pub fn counted<N>(count: N, singular: &str, plural: &str) -> String
+where
+    N: std::fmt::Display + PartialEq + From<u8>,
+{
+    let noun = if count == N::from(1) {
+        singular
+    } else {
+        plural
+    };
+    format!("{count} {noun}")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
     Table,

@@ -1,7 +1,7 @@
 use super::{interruptible, Session};
 use crate::errors::{FsqError, FsqResult};
 use crate::meta::Switch;
-use crate::render::{relative_name, Cell, Counted, DurationText, Footer, Grid, OutputFormat};
+use crate::render::{counted, relative_name, Cell, DurationText, Footer, Grid, OutputFormat};
 use firestore::{
     FirestoreCollectionId, FirestoreExplainOptions, FirestoreIndexState, FirestoreSqlOptions,
     FirestoreSqlOutcome, FirestoreSqlParameters, FirestoreSqlStatement,
@@ -65,10 +65,10 @@ impl Session {
             FirestoreSqlOutcome::Written(written) => {
                 let text = match self.settings.format {
                     OutputFormat::Table => self.done_line(
-                        &match written.documents_modified {
-                            1 => "1 document modified".to_string(),
-                            count => format!("{count} documents modified"),
-                        },
+                        &format!(
+                            "{} modified",
+                            counted(written.documents_modified, "document", "documents")
+                        ),
                         started,
                     ),
                     OutputFormat::Json | OutputFormat::Jsonl => {
@@ -93,30 +93,24 @@ impl Session {
                 }
                 let grid = Grid::collections(&collection_ids, parent);
                 let footer = Footer {
-                    count: grid.len(),
-                    counted: Counted::Collections,
+                    counted: counted(grid.len(), "collection", "collections"),
                     elapsed: started.elapsed(),
                     notes: Vec::new(),
                 };
-                let view = self.view();
-                self.output
-                    .print(&format!("{}{}", view.grid(&grid), view.footer(&footer)))
+                self.print_grids(&[("", &grid)], &footer)
             }
             FirestoreSqlOutcome::Indexes(listing) => {
                 let footer = Footer {
-                    count: listing.indexes.len(),
-                    counted: Counted::Indexes,
+                    counted: counted(listing.indexes.len(), "index", "indexes"),
                     elapsed: started.elapsed(),
                     notes: Vec::new(),
                 };
-                let view = self.view();
                 let grids = [
                     ("indexes", &Grid::indexes(&listing.indexes)),
                     ("fields", &Grid::fields(&listing.fields)),
                     ("unrecognised", &Grid::unrecognised(&listing.unrecognised)),
                 ];
-                self.output
-                    .print(&format!("{}{}", view.grids(&grids), view.footer(&footer)))
+                self.print_grids(&grids, &footer)
             }
             FirestoreSqlOutcome::IndexCreated(created) => {
                 let message = match created.state {

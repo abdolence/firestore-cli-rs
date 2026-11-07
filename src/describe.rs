@@ -4,9 +4,9 @@ use crate::render::{Cell, Grid};
 use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
 use firestore::{
-    FirestoreCollectionSource, FirestoreDatabaseEdition, FirestoreDocument, FirestorePipeline,
-    FirestorePipelineSource, FirestorePipelineStage, FirestoreSampleSize, FirestoreSampleStage,
-    FirestoreSqlFieldName,
+    FirestoreCollectionId, FirestoreCollectionSource, FirestoreDatabaseEdition, FirestoreDocument,
+    FirestorePipeline, FirestorePipelineSource, FirestorePipelineStage, FirestoreSampleSize,
+    FirestoreSampleStage, FirestoreSqlFieldName,
 };
 use futures::StreamExt;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -19,7 +19,7 @@ use std::str::FromStr;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CollectionPath {
     parent: Option<String>,
-    collection_id: String,
+    collection_id: FirestoreCollectionId,
 }
 
 impl CollectionPath {
@@ -27,7 +27,7 @@ impl CollectionPath {
         self.parent.as_deref()
     }
 
-    pub fn collection_id(&self) -> &str {
+    pub fn collection_id(&self) -> &FirestoreCollectionId {
         &self.collection_id
     }
 }
@@ -56,7 +56,7 @@ impl FromStr for CollectionPath {
         };
         Ok(Self {
             parent,
-            collection_id: collection_id.to_string(),
+            collection_id: collection_id.parse()?,
         })
     }
 }
@@ -339,7 +339,12 @@ mod tests {
         let nested: CollectionPath = "users/alice/orders".parse().expect("a collection path");
 
         assert_eq!(nested.parent(), Some("users/alice"));
-        assert_eq!(nested.collection_id(), "orders");
+        assert_eq!(
+            nested.collection_id(),
+            &"orders"
+                .parse::<FirestoreCollectionId>()
+                .expect("a collection ID")
+        );
         assert_eq!(
             "books"
                 .parse::<CollectionPath>()

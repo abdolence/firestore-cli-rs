@@ -1,7 +1,7 @@
 use super::{interruptible, Interaction, Session};
 use crate::errors::FsqResult;
 use crate::meta::Switch;
-use crate::render::{Counted, Footer, FooterNote, Grid, OutputFormat, QueryPlan};
+use crate::render::{counted, Footer, FooterNote, Grid, OutputFormat, QueryPlan};
 use firestore::{
     FirestoreDocument, FirestoreExpr, FirestorePipelineStage, FirestoreResult,
     FirestoreSqlStatement, FirestoreWithPipelineMetadata,
@@ -156,13 +156,11 @@ impl Session {
             let elapsed = started.elapsed().saturating_sub(waiting_for_reader);
             if page.more {
                 let footer = Footer {
-                    count: shown,
-                    counted: Counted::Rows,
+                    counted: counted(shown, "row", "rows"),
                     elapsed,
                     notes: vec![FooterNote::MorePages],
                 };
-                self.output
-                    .print(&format!("{}{}", view.grid(&grid), view.footer(&footer)))?;
+                self.print_grids(&[("", &grid)], &footer)?;
                 let asked = Instant::now();
                 let continues = self.output.ask_for_more(&self.theme)?;
                 waiting_for_reader += asked.elapsed();
@@ -177,8 +175,7 @@ impl Session {
                 return Ok(());
             }
             let footer = Footer {
-                count: shown,
-                counted: Counted::Rows,
+                counted: counted(shown, "row", "rows"),
                 elapsed,
                 notes: self.timing_notes(pages.first_response, started, pages.plan.as_ref()),
             };

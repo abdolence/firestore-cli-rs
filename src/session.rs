@@ -4,9 +4,10 @@ mod statement;
 use crate::connection::{Connection, EditionStatus};
 use crate::describe::{DescribeTarget, Description};
 use crate::errors::{FsqError, FsqResult};
-use crate::meta::{MetaCommand, Switch, META_HELP};
+use crate::meta::{meta_help, MetaCommand, Switch};
 use crate::render::{
-    Counted, ExpandedMode, Footer, FooterNote, Grid, Output, OutputFormat, Theme, View, NAME_COLUMN,
+    counted, ExpandedMode, Footer, FooterNote, Grid, Output, OutputFormat, Sample, Theme, View,
+    NAME_COLUMN,
 };
 use crate::script::{Input, Script};
 use firestore::{FirestoreCollectionId, FirestoreDatabaseEdition, FirestoreSqlOutcome};
@@ -99,7 +100,7 @@ impl Session {
     async fn run_meta(&mut self, command: MetaCommand) -> FsqResult<Flow> {
         match command {
             MetaCommand::Quit => return Ok(Flow::Quit),
-            MetaCommand::Help => self.output.print(&format!("{META_HELP}\n"))?,
+            MetaCommand::Help => self.output.print(&meta_help())?,
             MetaCommand::ListCollections => self.run_statement("SHOW COLLECTIONS").await?,
             MetaCommand::Describe(target) => self.describe(&target).await?,
             MetaCommand::Expanded(mode) => {
@@ -148,14 +149,18 @@ impl Session {
         let documents = description.documents();
         let grid = description.into_grid();
         let footer = Footer {
-            count: grid.len(),
-            counted: Counted::FieldPaths,
+            counted: counted(grid.len(), "field path", "field paths"),
             elapsed: started.elapsed(),
-            notes: vec![FooterNote::Sampled { documents }],
+            notes: vec![FooterNote::Sampled(Sample { documents })],
         };
+        self.print_grids(&[("", &grid)], &footer)
+    }
+
+    /// Prints the grids of a statement and its footer in one write.
+    fn print_grids(&self, grids: &[(&str, &Grid)], footer: &Footer) -> FsqResult<()> {
         let view = self.view();
         self.output
-            .print(&format!("{}{}", view.grid(&grid), view.footer(&footer)))
+            .print(&format!("{}{}", view.grids(grids), view.footer(footer)))
     }
 
     pub fn greet(&self) -> FsqResult<()> {

@@ -1,4 +1,4 @@
-use super::{Cell, Grid, View};
+use super::{counted, Cell, Grid, View};
 use std::fmt::{Display, Formatter};
 
 /// Query Explain's text of a pipeline. Firestore documents neither the format nor its stability,
@@ -223,16 +223,10 @@ impl Display for ExecutionStats {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut parts = Vec::new();
         if let Some(documents) = self.documents_read {
-            parts.push(match documents {
-                1 => "1 document read".to_string(),
-                count => format!("{count} documents read"),
-            });
+            parts.push(counted(documents, "document read", "documents read"));
         }
         if let Some(units) = self.read_units {
-            parts.push(match units {
-                1 => "1 read unit".to_string(),
-                count => format!("{count} read units"),
-            });
+            parts.push(counted(units, "read unit", "read units"));
         }
         if parts.is_empty() {
             f.write_str("no execution stats")
