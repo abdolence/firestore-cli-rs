@@ -34,15 +34,16 @@ cargo install --path firestore-cli-rs
 fsq -p my-project -d my-database
 ```
 
-* `-p`, `--project`: the Google Cloud project. Without it fsq reads `GOOGLE_CLOUD_PROJECT`, then the project gcloud
-  is configured with (`gcloud config set project`);
+* `-p`, `--project`: the Google Cloud project. Without it fsq uses the project the firestore crate detects: the first
+  of the `GCP_PROJECT`, `PROJECT_ID`, `GCP_PROJECT_ID` and `GOOGLE_CLOUD_PROJECT` environment variables that is set,
+  then the project the Application Default Credentials file names, then the project of the metadata server. The
+  project `gcloud config set project` sets is not read;
 * `-d`, `--database`: the database ID, `(default)` by default;
 * `FIRESTORE_EMULATOR_HOST`: connects to the Firestore emulator at that address instead.
 
 fsq authenticates with Application Default Credentials (ADC), the credentials Google client libraries look up
 on their own: the file `GOOGLE_APPLICATION_CREDENTIALS` names, the file `gcloud auth application-default login`
-writes, or the metadata server on Google Cloud. Don't confuse `gcloud auth login` with
-`gcloud auth application-default login`, since the first authorises only the `gcloud` tool.
+writes, or the metadata server on Google Cloud. `gcloud auth login` authorises only the `gcloud` tool, not fsq.
 
 The prompt shows `project/database (edition)`, and `\c <database>` connects to another database of the project.
 

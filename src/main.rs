@@ -11,7 +11,7 @@ mod tokens;
 
 use args::{CliArgs, CliCommand, SqlArgs};
 use clap::Parser;
-use connection::{Connection, ProjectId};
+use connection::Connection;
 use describe::DescribeTarget;
 use errors::{FsqError, FsqResult, ReadScript};
 use meta::Switch;
@@ -53,7 +53,6 @@ async fn main() -> ExitCode {
 }
 
 async fn run(args: CliArgs) -> FsqResult<()> {
-    let project = ProjectId::resolve(args.project)?;
     let settings = Settings {
         format: args.format,
         expanded: ExpandedMode::Off,
@@ -74,7 +73,7 @@ async fn run(args: CliArgs) -> FsqResult<()> {
                 ),
                 (None, None) => None,
             };
-            let connection = Connection::open(project, args.database).await?;
+            let connection = Connection::open(args.project, args.database).await?;
             match script {
                 Some(script) => {
                     Session::new(connection, settings, Interaction::Script)
@@ -96,7 +95,7 @@ async fn run(args: CliArgs) -> FsqResult<()> {
             }
         }
         CliCommand::Describe(describe) => {
-            let connection = Connection::open(project, args.database).await?;
+            let connection = Connection::open(args.project, args.database).await?;
             Session::new(connection, settings, Interaction::Script)
                 .describe(&DescribeTarget {
                     collection: describe.collection,

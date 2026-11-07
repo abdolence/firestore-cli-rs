@@ -112,7 +112,7 @@ impl Session {
             }
             MetaCommand::Connect(database) => {
                 self.connection =
-                    Connection::open(self.connection.project.clone(), database).await?;
+                    Connection::open(Some(self.connection.project.clone()), database).await?;
                 self.greet()?;
                 if let Ok(mut vocabulary) = self.vocabulary.lock() {
                     *vocabulary = Vocabulary::default();

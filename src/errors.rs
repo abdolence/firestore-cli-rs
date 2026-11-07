@@ -9,9 +9,7 @@ pub type FsqResult<T> = Result<T, FsqError>;
 pub enum FsqError {
     #[error(transparent)]
     Firestore(#[from] FirestoreError),
-    #[error(
-        "no project: pass -p, set GOOGLE_CLOUD_PROJECT, or set one with `gcloud config set project`"
-    )]
+    #[error("no project: pass -p or set GOOGLE_CLOUD_PROJECT")]
     NoProject,
     #[error(transparent)]
     InvalidCollectionPath(InvalidCollectionPath),
