@@ -4,7 +4,7 @@ use crate::session::SharedVocabulary;
 use firestore::FirestoreSqlFieldName;
 use reedline::{Completer, Span, Suggestion};
 
-const COLLECTION_KEYWORDS: &[&str] = &["FROM", "JOIN", "INTO", "UPDATE", "COLLECTION", "\\D"];
+const COLLECTION_KEYWORDS: &[&str] = &["FROM", "JOIN", "INTO", "UPDATE", "COLLECTION"];
 
 pub struct SqlCompleter {
     vocabulary: SharedVocabulary,
@@ -32,6 +32,10 @@ impl SqlCompleter {
         let Ok(vocabulary) = self.vocabulary.lock() else {
             return Vec::new();
         };
+        // `\d` takes the ID as it is, and no SQL quoting.
+        if previous == "\\D" {
+            return vocabulary.collections.iter().cloned().collect();
+        }
         // After the ON of a join a field belongs; after that of CREATE INDEX a collection does.
         let creates_index =
             previous == "ON" && line.trim_start().to_ascii_uppercase().starts_with("CREATE");
@@ -114,6 +118,7 @@ mod tests {
         assert_eq!(completions("SELECT title FR"), vec!["FROM"]);
         assert_eq!(completions("\\ti"), vec!["\\timing"]);
         assert_eq!(completions("\\d bo"), vec!["books"]);
+        assert_eq!(completions("\\d ord"), vec!["order-lines"]);
     }
 
     #[test]
