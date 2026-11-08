@@ -138,7 +138,8 @@ fsq -p my-project index delete books genre:asc rating:desc --if-exists
 ```
 
 * `plan <file> [--prune]` prints one row per index, field override and TTL field: `create`, `update`, `enable`,
-  `delete`, `revert`, `disable`, `unchanged`, `pending`, `needs repair` and `undeclared`. It writes nothing;
+  `delete`, `revert`, `disable`, `unchanged`, `pending`, `reverting`, `needs repair`, `undeclared`, `withheld` and
+  `unrecognised`. It writes nothing;
 * `sync <file> [--prune] [--no-wait]` applies the plan, with a spinner for each collection group while its builds
   run, and prints the same table. `--no-wait` returns once the last change is requested. Ctrl-C stops the wait, not
   the builds, and `fsq index list` shows their state afterwards;
@@ -157,19 +158,23 @@ A pruning sync deletes only after the indexes it created have finished building,
 
 ### The file
 
-The `indexes` and `fieldOverrides` keys are the Firebase format: `collectionGroup`, `queryScope`, `fields` with
-`fieldPath` and one of `order`, `arrayConfig` or `vectorConfig`, and on an override `indexes` with a `queryScope`
-and an `order` or an `arrayConfig`. An empty `indexes` exempts the field, and the `fieldPath` `*` names every field
-of the collection group. The Firebase format has no key for what only the Enterprise edition offers, and none for
-a TTL field that keeps its automatic indexes. These go under `fsq` keys, which the Firebase CLI ignores:
+The file is the format of `firebase firestore:indexes` and `firebase deploy`, and `fsq index export` writes what
+`firebase firestore:indexes` writes: `indexes`, with `collectionGroup`, `queryScope`, `fields` and `density`, and
+`fieldOverrides`, with `ttl` and `indexes`. A field sets exactly one of `order`, `arrayConfig`, `searchConfig`
+(a `textSpec` or a `geoSpec`) and `vectorConfig`. On a field override, an empty `indexes` exempts the field, the
+`fieldPath` `*` names every field of the collection group, and `ttl: true` enables TTL on the field. `ttl: false`
+declares nothing.
 
-| Key | Holds |
-|---|---|
-| `fsq.ttl` on the file | a list of `{ "collectionGroup", "fieldPath" }`, the field whose timestamp expires the document |
-| `fsq.unique` on an index | `true` for a unique index |
-| `fsq.density` on an index | `SPARSE_ALL`, `SPARSE_ANY` or `DENSE` |
-| `fsq.search` on an index | `textLanguage` and `textLanguageOverrideFieldPath` of a search index |
-| `fsq.mode` on an index field | `TEXT` or `GEO`, with `geoJsonIndexingDisabled` for `GEO` |
+`density`, `unique`, `multikey` and `apiScope` are read from an index. The firestore crate declares the default
+`apiScope`, `ANY_API`, and `multikey: false` only, so a file that sets another value is refused.
+
+The Firebase CLI does not read the `fsq` keys. They hold what the Firebase format cannot carry:
+
+| Key | Holds | Why it is not a Firebase key |
+|---|---|---|
+| `fsq.search` on an index | `textLanguage` and `textLanguageOverrideFieldPath` of a search index | the format has no key for the language options of a search index |
+| `fsq.unique` on an index | `true` for a unique index | the Firebase CLI refuses a file whose index has `unique`; fsq reads that key too and writes its own |
+| `fsq.ttl` on the file | a list of `{ "collectionGroup", "fieldPath" }`, a TTL field whose indexes are inherited | the format writes `ttl` on a field override only, and an override with no `indexes` exempts the field |
 
 ```json
 {
@@ -178,21 +183,27 @@ a TTL field that keeps its automatic indexes. These go under `fsq` keys, which t
       "collectionGroup": "articles",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "body", "fsq": { "mode": "TEXT" } },
+        {
+          "fieldPath": "body",
+          "searchConfig": {
+            "textSpec": { "indexSpecs": [{ "indexType": "TOKENIZED", "matchType": "MATCH_GLOBALLY" }] }
+          }
+        },
         { "fieldPath": "published", "order": "DESCENDING" }
       ],
-      "fsq": { "density": "SPARSE_ANY", "search": { "textLanguage": "en" } }
+      "density": "SPARSE_ANY",
+      "fsq": { "search": { "textLanguage": "en" } }
     }
   ],
-  "fieldOverrides": [],
-  "fsq": { "ttl": [{ "collectionGroup": "sessions", "fieldPath": "expires_at" }] }
+  "fieldOverrides": [
+    { "collectionGroup": "sessions", "fieldPath": "expires_at", "ttl": true, "indexes": [] }
+  ]
 }
 ```
 
 A key that neither the Firebase format nor `fsq` defines is refused with its path, so that no setting is dropped
-without notice: the `ttl` key of a Firebase field override is one, and the TTL field goes under `fsq.ttl`. A field
-sets exactly one of `order`, `arrayConfig`, `vectorConfig` and `fsq.mode`. A Standard edition database lists every
-index with `density` `SPARSE_ALL`, and `export` writes it out.
+without notice. A key set to `null` counts as absent. `export` lists on stderr the indexes and field overrides that
+the firestore crate cannot represent, such as an index with `multikey`, and leaves them out of the file.
 
 ## Query plans
 
@@ -256,17 +267,19 @@ The [JSON conversion](https://firestore-rust.abdolence.dev/json.html) chapter of
 |---|---|
 | `<collection>` | exports a collection, by path for a subcollection such as `users/alice/orders` |
 | `--group` | exports every collection with that ID, at any depth; the argument is a collection ID, and `--recursive` does not combine with it |
-| `--recursive` | adds the subcollections of every document; each name holds its full relative path. It lists the subcollections with one extra request per document |
+| `--recursive` | adds the subcollections of every document, including those of a document that does not exist and has only subcollections; each name holds its full relative path. It lists the subcollections with one extra request per document, and writes no document that does not exist |
 | `--sql '<SELECT>'` | exports the rows of a `SELECT` instead of a collection, on an Enterprise edition database. A row needs its `__name__` to be imported |
 | `--with-metadata` | adds `__create_time__` and `__update_time__` to every document. `import` ignores both |
 | `--plain` | writes the plain encoding, which is for reading and cannot be imported |
 | `-o`, `--output` | writes to a file instead of stdout |
 
-Listing a collection works on both editions. When stdout is not a terminal, a spinner on stderr shows how many
-documents were written, and a line on stderr states the total.
+Listing a collection works on both editions. Unless the documents go to a terminal, a spinner on stderr shows how
+many documents were written, and a line on stderr states the total.
 
-`import` reads a file, or stdin for `-`, and writes the documents in batches of 500 writes through the batch writer of
-the firestore crate. A bar shows the position in the file, or a spinner when the input is stdin.
+`import` reads a file, or stdin for `-`, and writes the documents in batches through the batch writer of the
+firestore crate. A batch holds at most 500 writes and about 9 MiB, and it ends before a document that it already
+holds, since Firestore refuses a request that writes one document twice. A bar shows the position in the file, or a
+spinner when the input is stdin.
 
 | Option | What it does |
 |---|---|
@@ -280,9 +293,11 @@ imported again gives the same documents.
 
 A line that is not valid JSON, or not a document in the tagged encoding, fails with its line number and the code of
 the firestore crate, such as `JSON_UNKNOWN_WRAPPER`. A document that Firestore refuses fails with its line number and
-the status code. Without `--keep-going` the import stops at the first failure. The batch that held the failing
-document was sent as a whole and the other writes of it may have been applied, since a batch is not atomic. fsq
-exits with 1 when any document failed. The last line on stderr counts the documents written, skipped and failed.
+the status code. A batch is not atomic: each write of it is counted as written, skipped or failed, so that the other
+writes of a batch with a failure are applied. A request that Firestore refuses as a whole fails every write of it,
+and the failure names the first and the last line of the batch. Without `--keep-going` the import stops at the first
+failure, and with it the import goes on after a line, a write or a request fails. fsq exits with 1 when any document
+failed. The last line on stderr counts the documents written, skipped and failed.
 
 ## Scripting
 
