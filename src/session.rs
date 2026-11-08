@@ -119,8 +119,11 @@ impl Session {
                     .notice(&format!("Expanded display is {}.", self.settings.expanded))?;
             }
             MetaCommand::Connect(database) => {
-                self.connection =
-                    Connection::open(Some(self.connection.project.clone()), database).await?;
+                let connecting = self.output.spinner("connecting", self.settings.format);
+                let connected =
+                    Connection::open(Some(self.connection.project.clone()), database).await;
+                drop(connecting);
+                self.connection = connected?;
                 self.greet()?;
                 if let Ok(mut vocabulary) = self.vocabulary.lock() {
                     *vocabulary = Vocabulary::default();
@@ -159,7 +162,12 @@ impl Session {
 
     pub async fn describe(&mut self, target: &DescribeTarget) -> FsqResult<()> {
         let started = Instant::now();
-        let description = interruptible(Description::sample(&self.connection, target)).await??;
+        let description = self
+            .waiting(
+                "sampling documents",
+                Description::sample(&self.connection, target),
+            )
+            .await??;
         if let Ok(mut vocabulary) = self.vocabulary.lock() {
             vocabulary
                 .fields
@@ -181,7 +189,13 @@ impl Session {
             .or(self.last_select.as_deref())
             .ok_or(FsqError::NoSelectToGenerate)?;
         let snippet = match options.sample_rows() {
-            Some(rows) => interruptible(options.sampled(&self.connection.db, sql, rows)).await??,
+            Some(rows) => {
+                self.waiting(
+                    "sampling documents",
+                    options.sampled(&self.connection.db, sql, rows),
+                )
+                .await??
+            }
             None => options.offline(sql)?,
         };
         self.output.print(&snippet)
@@ -189,7 +203,12 @@ impl Session {
 
     async fn list_collection_tree(&self, target: CollectionTreeTarget) -> FsqResult<()> {
         let started = Instant::now();
-        let tree = interruptible(CollectionTree::walk(&self.connection.db, target)).await??;
+        let tree = self
+            .waiting(
+                "listing collections",
+                CollectionTree::walk(&self.connection.db, target),
+            )
+            .await??;
         let sample = tree.sample();
         let grid = tree.into_grid();
         let footer = Footer {
@@ -254,6 +273,13 @@ impl Session {
                 .collections
                 .extend(collection_ids.iter().map(ToString::to_string));
         }
+    }
+
+    /// Waits for `future` as [`interruptible`] does, with a spinner reading `message` once the
+    /// wait has lasted a moment.
+    async fn waiting<F: Future>(&self, message: &str, future: F) -> FsqResult<F::Output> {
+        let _spinner = self.output.spinner(message, self.settings.format);
+        interruptible(future).await
     }
 
     pub fn report(&self, error: &FsqError) {

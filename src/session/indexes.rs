@@ -1,5 +1,5 @@
 use super::statement::INDEX_WAIT_TIMEOUT;
-use super::{interruptible, Session};
+use super::Session;
 use crate::errors::{FileAccess, FsqError, FsqResult, IndexesFileProblem, InvalidIndexesFile};
 use crate::index_command::{IndexCommand, IndexCreateArgs, IndexDeleteArgs, IndexFileArgs};
 use crate::index_file::IndexesFile;
@@ -56,7 +56,7 @@ impl Session {
             Some(group) => list.collection_group(group),
             None => list,
         };
-        Ok(interruptible(list.get()).await??)
+        Ok(self.waiting("reading the indexes", list.get()).await??)
     }
 
     fn declared_indexes(
@@ -124,7 +124,12 @@ impl Session {
         let mut changes = IndexChanges::default();
         for params in declarations {
             let group = params.collection_group.clone();
-            let plan = interruptible(self.declared_indexes(params, args.prune).plan()).await??;
+            let plan = self
+                .waiting(
+                    &format!("planning the indexes of {group}"),
+                    self.declared_indexes(params, args.prune).plan(),
+                )
+                .await??;
             changes.add_plan(&group, &plan);
         }
         self.show_changes(&changes, started)
@@ -143,17 +148,22 @@ impl Session {
             let group = params.collection_group.clone();
             // A pruning sync waits for the indexes it created before it deletes, with or without
             // the wait.
-            let spinner = (waits || args.prune).then(|| self.wait_spinner(&group));
-            let declared = self.declared_indexes(params, args.prune);
-            let outcome = interruptible(if waits {
-                declared.wait_until_ready(INDEX_WAIT_TIMEOUT).sync()
+            let message = if waits || args.prune {
+                Self::build_wait_message(&group)
             } else {
-                declared.sync()
-            })
-            .await;
-            if let Some(spinner) = &spinner {
-                spinner.finish_and_clear();
-            }
+                format!("syncing the indexes of {group}")
+            };
+            let declared = self.declared_indexes(params, args.prune);
+            let outcome = self
+                .waiting(
+                    &message,
+                    if waits {
+                        declared.wait_until_ready(INDEX_WAIT_TIMEOUT).sync()
+                    } else {
+                        declared.sync()
+                    },
+                )
+                .await;
             match outcome.and_then(|synced| synced.map_err(FsqError::from)) {
                 Ok(report) => {
                     if let Some(withheld) = &report.withheld_deletes {
@@ -233,7 +243,6 @@ impl Session {
         let group = definition.collection_group.clone();
         let waits = self.settings.wait == Switch::On;
         let started = Instant::now();
-        let spinner = waits.then(|| self.wait_spinner(&group));
         let mut create = self
             .connection
             .db
@@ -248,10 +257,12 @@ impl Session {
         if if_not_exists {
             create = create.if_not_exists();
         }
-        let outcome = interruptible(create.execute()).await;
-        if let Some(spinner) = &spinner {
-            spinner.finish_and_clear();
-        }
+        let message = if waits {
+            Self::build_wait_message(&group)
+        } else {
+            format!("creating an index on {group}")
+        };
+        let outcome = self.waiting(&message, create.execute()).await;
         match outcome {
             Err(FsqError::Interrupted) => {
                 self.output.notice(&format!(
@@ -279,9 +290,13 @@ impl Session {
                 .index(|_| definition.index),
         };
         let dropped = if if_exists {
-            interruptible(delete.if_exists().execute()).await??
+            self.waiting("deleting the index", delete.if_exists().execute())
+                .await??
         } else {
-            Some(interruptible(delete.execute()).await??)
+            Some(
+                self.waiting("deleting the index", delete.execute())
+                    .await??,
+            )
         };
         self.show_index_dropped(dropped.as_ref(), started)
     }

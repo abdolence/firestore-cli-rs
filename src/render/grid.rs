@@ -1,5 +1,5 @@
+use super::fit::TableText;
 use super::{ExpandedMode, OutputFormat, View};
-use comfy_table::{presets, Cell as TableCell, ContentArrangement, Table};
 use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
 use firestore::FirestoreDocument;
@@ -148,45 +148,50 @@ impl View<'_> {
         }
     }
 
+    /// A grid without columns, the result of a statement that returned no documents, has nothing
+    /// to draw: the footer's row count is the whole answer.
     fn grid_text(&self, grid: &Grid) -> String {
+        if grid.columns.is_empty() {
+            return String::new();
+        }
         match self.expanded {
             ExpandedMode::On => self.expanded_text(grid),
-            ExpandedMode::Off => self.table_text(grid),
+            ExpandedMode::Off => {
+                let mut cells = self.table_cells(grid);
+                if let Some(width) = self.width {
+                    cells.fit_to(width);
+                }
+                format!("{}\n", cells.into_table())
+            }
             ExpandedMode::Auto => {
-                let table = self.table_text(grid);
-                let widest = table
-                    .lines()
-                    .map(console::measure_text_width)
-                    .max()
-                    .unwrap_or_default();
+                let cells = self.table_cells(grid);
                 match self.width {
-                    Some(width) if widest > width => self.expanded_text(grid),
-                    _ => table,
+                    Some(width) if cells.width() > width => self.expanded_text(grid),
+                    _ => format!("{}\n", cells.into_table()),
                 }
             }
         }
     }
 
-    fn table_text(&self, grid: &Grid) -> String {
-        let mut table = Table::new();
-        table
-            .load_style(presets::UTF8_FULL_CONDENSED.with_rounded_corners())
-            .set_content_arrangement(ContentArrangement::Disabled)
-            .set_header(
-                grid.columns
-                    .iter()
-                    .map(|column| TableCell::new(self.theme.header.apply_to(column))),
-            );
-        for row in &grid.rows {
-            table.add_row(row.iter().map(|cell| {
-                TableCell::new(
-                    cell.as_ref()
-                        .map(|cell| self.cell_text(cell, CellLayout::Compact))
-                        .unwrap_or_default(),
-                )
-            }));
-        }
-        format!("{table}\n")
+    fn table_cells(&self, grid: &Grid) -> TableText {
+        TableText::new(
+            grid.columns
+                .iter()
+                .map(|column| self.theme.header.apply_to(column).to_string())
+                .collect(),
+            grid.rows
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| {
+                            cell.as_ref()
+                                .map(|cell| self.cell_text(cell, CellLayout::Compact))
+                                .unwrap_or_default()
+                        })
+                        .collect()
+                })
+                .collect(),
+        )
     }
 
     fn expanded_text(&self, grid: &Grid) -> String {
@@ -289,10 +294,11 @@ enum CellLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::fixtures::{draft, dune, string, value, DOCUMENTS_PATH};
+    use crate::render::fixtures::{document, draft, dune, string, value, DOCUMENTS_PATH};
     use crate::render::Theme;
     use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
     use firestore::gcloud_sdk::google::firestore::v1::{ArrayValue, MapValue};
+    use firestore::gcloud_sdk::google::r#type::LatLng;
     use firestore::gcloud_sdk::prost_types::Timestamp;
     use std::collections::HashMap;
 
@@ -343,6 +349,116 @@ mod tests {
 
         assert!(auto_expanded_at(80, &grid).starts_with('╭'));
         assert!(auto_expanded_at(10, &grid).starts_with("-[ RECORD 1 ]"));
+    }
+
+    #[test]
+    fn a_result_without_columns_draws_no_table() {
+        let theme = Theme::new(false);
+        let empty = Grid::from_documents(Vec::new(), &[]);
+
+        for expanded in [ExpandedMode::Off, ExpandedMode::On, ExpandedMode::Auto] {
+            assert_eq!(view(&theme, OutputFormat::Table, expanded).grid(&empty), "");
+        }
+    }
+
+    #[test]
+    fn a_result_without_rows_is_an_empty_json_array_and_no_json_lines() {
+        let theme = Theme::new(false);
+        let empty = Grid::from_documents(Vec::new(), &[]);
+
+        assert_eq!(
+            view(&theme, OutputFormat::Json, ExpandedMode::Off).grid(&empty),
+            "[]\n"
+        );
+        assert_eq!(
+            view(&theme, OutputFormat::Jsonl, ExpandedMode::Off).grid(&empty),
+            ""
+        );
+    }
+
+    fn restaurants() -> Grid {
+        let restaurant = |id: &str, cuisine: &str, description: &str, menu: &str| {
+            document(
+                id,
+                vec![
+                    ("cuisine", string(cuisine)),
+                    ("description", string(description)),
+                    (
+                        "location",
+                        value(ValueType::GeoPointValue(LatLng {
+                            latitude: 38.990077,
+                            longitude: -107.065076,
+                        })),
+                    ),
+                    ("menu", string(menu)),
+                    ("name", string("Gluten-Free Kitchen")),
+                    ("price_level", value(ValueType::IntegerValue(3))),
+                    ("rating", value(ValueType::DoubleValue(4.3))),
+                ],
+            )
+        };
+        Grid::from_documents(
+            vec![
+                restaurant(
+                    "rest-08",
+                    "health",
+                    "Gluten-free waffles and e-mail order specialities for every taste",
+                    "gluten-free waffles, quinoa bowls, c++ and more of the same",
+                ),
+                restaurant(
+                    "rest-04",
+                    "pizza",
+                    "New York style pizza by the slice.",
+                    "pizza",
+                ),
+            ],
+            &[],
+        )
+    }
+
+    fn table_at(width: Option<usize>, colour: bool) -> String {
+        let theme = Theme::new(colour);
+        View {
+            width,
+            ..view(&theme, OutputFormat::Table, ExpandedMode::Off)
+        }
+        .grid(&restaurants())
+    }
+
+    fn line_widths(text: &str) -> Vec<usize> {
+        text.lines().map(console::measure_text_width).collect()
+    }
+
+    #[test]
+    fn a_table_wider_than_the_terminal_is_shrunk_to_the_terminal_width_with_its_borders_aligned() {
+        for colour in [false, true] {
+            let natural = line_widths(&table_at(None, colour))[0];
+            for width in [80, 120, 200] {
+                let table = table_at(Some(width), colour);
+
+                assert_eq!(
+                    line_widths(&table),
+                    vec![width.min(natural); table.lines().count()],
+                    "width {width}, colour {colour}:\n{table}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shrinking_cuts_cell_text_before_it_cuts_a_header() {
+        let table = table_at(Some(120), false);
+
+        let header_line = table.lines().nth(1).unwrap_or_default();
+        for header in restaurants().columns() {
+            assert!(header_line.contains(header.as_str()), "{header}:\n{table}");
+        }
+        assert_eq!(line_widths(&table).first(), Some(&120));
+    }
+
+    #[test]
+    fn a_table_that_fits_the_terminal_is_drawn_at_its_natural_width() {
+        assert_eq!(table_at(Some(400), true), table_at(None, true));
     }
 
     #[test]
@@ -407,7 +523,7 @@ mod tests {
     const TABLE: &str = r#"╭─────────────┬──────────┬─────────────┬─────────────────┬──────────────────────────────────────────┬─────────┬──────────┬───────────────┬───────┬──────────────────────┬────────┬──────────┬───────────╮
 │ __name__    ┆ title    ┆ address     ┆ author          ┆ blurb                                    ┆ cover   ┆ in_print ┆ location      ┆ pages ┆ published            ┆ rating ┆ subtitle ┆ tags      │
 ╞═════════════╪══════════╪═════════════╪═════════════════╪══════════════════════════════════════════╪═════════╪══════════╪═══════════════╪═══════╪══════════════════════╪════════╪══════════╪═══════════╡
-│ books/dune  ┆ Dune     ┆ {city, zip} ┆ authors/herbert ┆ A desert planet, a spice that extends l… ┆ 4 bytes ┆ true     ┆ (51.5, -0.12) ┆ 412   ┆ 2023-11-14T22:13:20Z ┆ 4.5    ┆ NULL     ┆ [2 items] │
+│ books/dune  ┆ Dune     ┆ {city, zip} ┆ authors/herbert ┆ A desert planet, a s…e,↵and a duke's son ┆ 4 bytes ┆ true     ┆ (51.5, -0.12) ┆ 412   ┆ 2023-11-14T22:13:20Z ┆ 4.5    ┆ NULL     ┆ [2 items] │
 │ books/draft ┆ Untitled ┆             ┆                 ┆                                          ┆         ┆          ┆               ┆       ┆                      ┆        ┆          ┆           │
 ╰─────────────┴──────────┴─────────────┴─────────────────┴──────────────────────────────────────────┴─────────┴──────────┴───────────────┴───────┴──────────────────────┴────────┴──────────┴───────────╯
 "#;

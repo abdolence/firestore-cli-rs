@@ -108,16 +108,24 @@ my-project/my-database (enterprise)> SELECT __name__, title, address, tags, publ
 * the columns are the union of the fields of the rows shown: `__name__` first when the rows have document names,
   then the columns in the order the statement selects them, then the other fields by name;
 * a map shows its keys, such as `{city, zip}`, an array its length, such as `[3 items]`, and a string longer than
-  40 characters is cut with `…`. A reference is shown relative to the database, as `__name__` is;
+  40 characters is cut in the middle with `…`, so that its start and end show. A reference is shown relative to the
+  database, as `__name__` is;
 * an empty cell is a field the document lacks, and `NULL` is a field that holds null. Firestore keeps the two
   apart, see the [semantics](https://firestore-rust.abdolence.dev/editions/semantics.html) of pipelines;
+* a table wider than the terminal is cut to fit it, the longest cells first, in the middle with `…`; a table that is piped is not cut;
+* a statement that returns no documents prints the footer alone, `0 rows`, and `--format json` an empty array;
 * a statement without `LIMIT` shows a page that fits the terminal and asks before the next one. A statement with
   `LIMIT` shows all its rows, and `EXPLAIN` is never paged, since its plan arrives with the last row;
 * the footer shows the rows, the time the statement took and its notes, such as `more rows remain`.
 
 `\x` shows each document as a block, with nested values pretty-printed, and `\x auto` does so only for a table wider
 than the terminal. A result taller than the terminal goes through `$PAGER`, or `less -RFX` when it is
-unset; an empty `PAGER` turns the pager off.
+unset; an empty `PAGER` turns the pager off. When `LESS` is not set, fsq sets it to `FRX` for the pager alone, as git
+does, so that `less` keeps the output on screen after `q`, does not page what fits on one screen and shows colours; a
+`LESS` that is set, even to nothing, is left as it is.
+
+A call that waits on Firestore for more than a moment shows a spinner on stderr, unless stderr is not a terminal or
+the results are JSON written to a pipe.
 
 ## Writes and index statements
 

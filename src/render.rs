@@ -1,6 +1,8 @@
 //! Everything fsq prints, rendered into strings so that one statement's output is written at
 //! once, through the pager when it is taller than the terminal.
 
+mod cut;
+mod fit;
 #[cfg(test)]
 pub mod fixtures;
 mod footer;
@@ -9,13 +11,16 @@ mod index_changes;
 mod listings;
 mod output;
 mod plan;
+mod spinner;
 mod value;
 
+pub use cut::cut_middle;
 pub use footer::*;
 pub use grid::*;
 pub use index_changes::*;
 pub use output::*;
 pub use plan::*;
+pub use spinner::*;
 
 use clap::ValueEnum;
 use console::Style;

@@ -1,4 +1,4 @@
-use super::{interruptible, Interaction, Session};
+use super::{Interaction, Session};
 use crate::errors::FsqResult;
 use crate::meta::Switch;
 use crate::render::{counted, Footer, FooterNote, Grid, OutputFormat, QueryPlan};
@@ -150,7 +150,9 @@ impl Session {
         let mut shown = 0;
         let mut waiting_for_reader = Duration::ZERO;
         loop {
-            let page = interruptible(pages.next_page(page_size)).await??;
+            let page = self
+                .waiting("waiting for rows", pages.next_page(page_size))
+                .await??;
             shown += page.documents.len();
             let grid = Grid::from_documents(page.documents, &shape.column_order);
             self.remember_fields(&grid);
