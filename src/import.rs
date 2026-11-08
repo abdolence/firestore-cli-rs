@@ -5,7 +5,9 @@ use crate::errors::{
 };
 use crate::render::{animated, counted, Output};
 use clap::ValueEnum;
-use firestore::gcloud_sdk::google::firestore::v1::{write::Operation, DocumentMask, Write};
+use firestore::gcloud_sdk::google::firestore::v1::{
+    write::Operation, DocumentMask, Precondition, Write,
+};
 use firestore::gcloud_sdk::google::rpc::Status;
 use firestore::gcloud_sdk::prost::Message;
 use firestore::gcloud_sdk::tonic::Code;
@@ -81,13 +83,18 @@ pub struct ImportArgs {
 }
 
 impl ImportArgs {
-    /// The write that stores `document` as this import was asked to: replacing the document,
-    /// merging into it, or only creating it.
-    fn write(&self, document: FirestoreDocument) -> FsqResult<Write> {
-        let current_document = self
+    /// The precondition every write carries: the document must not exist yet, when the import
+    /// has a conflict policy.
+    fn current_document(&self) -> FsqResult<Option<Precondition>> {
+        Ok(self
             .on_conflict
             .map(|_| FirestoreWritePrecondition::Exists(false).try_into())
-            .transpose()?;
+            .transpose()?)
+    }
+
+    /// The write that stores `document` as this import was asked to: replacing the document,
+    /// merging into it, or only creating it.
+    fn write(&self, document: FirestoreDocument, current_document: Option<Precondition>) -> Write {
         let update_mask = self.merge.then(|| {
             let mut field_paths: Vec<_> = document
                 .fields
@@ -97,12 +104,12 @@ impl ImportArgs {
             field_paths.sort_unstable();
             DocumentMask { field_paths }
         });
-        Ok(Write {
+        Write {
             update_mask,
             current_document,
             operation: Some(Operation::Update(document)),
             ..Write::default()
-        })
+        }
     }
 
     /// Whether a write that failed with `code` is a document skipped for already existing, and
@@ -126,9 +133,8 @@ pub async fn run(connection: &Connection, args: &ImportArgs) -> FsqResult<()> {
     };
     let mut import = Import {
         args,
-        reader: LineReader {
-            converter: connection.db.json(),
-        },
+        converter: connection.db.json(),
+        current_document: args.current_document()?,
         writer: &writer,
         output,
         progress: progress(size),
@@ -231,6 +237,18 @@ struct Origin {
 struct QueuedWrite {
     origin: Origin,
     write: Write,
+    encoded_len: usize,
+}
+
+impl QueuedWrite {
+    fn new(origin: Origin, write: Write) -> Self {
+        let encoded_len = write.encoded_len();
+        Self {
+            origin,
+            write,
+            encoded_len,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -245,7 +263,7 @@ impl Batch {
     fn accepts(&self, queued: &QueuedWrite) -> bool {
         self.queued.is_empty()
             || (self.queued.len() < WRITES_PER_BATCH
-                && self.encoded_len + queued.write.encoded_len() <= BYTES_PER_BATCH
+                && self.encoded_len + queued.encoded_len <= BYTES_PER_BATCH
                 && self
                     .queued
                     .iter()
@@ -253,14 +271,15 @@ impl Batch {
     }
 
     fn push(&mut self, queued: QueuedWrite) {
-        self.encoded_len += queued.write.encoded_len();
+        self.encoded_len += queued.encoded_len;
         self.queued.push(queued);
     }
 }
 
 struct Import<'a> {
     args: &'a ImportArgs,
-    reader: LineReader<'a>,
+    converter: FirestoreJsonConverter<'a>,
+    current_document: Option<Precondition>,
     writer: &'a FirestoreSimpleBatchWriter,
     output: Output,
     progress: ProgressBar,
@@ -283,9 +302,9 @@ impl Import<'_> {
             if text.trim_ascii().is_empty() {
                 continue;
             }
-            match self.reader.document(line, &text) {
+            match read_document(&self.converter, line, &text) {
                 Ok(document) => {
-                    let queued = self.queued(line, document)?;
+                    let queued = self.queued(line, document);
                     if !self.batch.accepts(&queued) {
                         self.flush().await?;
                     }
@@ -297,15 +316,13 @@ impl Import<'_> {
         self.flush().await
     }
 
-    fn queued(&self, line: usize, document: FirestoreDocument) -> FsqResult<QueuedWrite> {
-        let name = self.reader.converter.relative_name(&document.name);
-        Ok(QueuedWrite {
-            origin: Origin {
-                line,
-                document: name.to_string(),
-            },
-            write: self.args.write(document)?,
-        })
+    fn queued(&self, line: usize, document: FirestoreDocument) -> QueuedWrite {
+        let name = self.converter.relative_name(&document.name);
+        let origin = Origin {
+            line,
+            document: name.to_string(),
+        };
+        QueuedWrite::new(origin, self.args.write(document, self.current_document))
     }
 
     /// Counts a line that is no document. Without `--keep-going` the import ends here, after it
@@ -352,26 +369,23 @@ impl Import<'_> {
     }
 }
 
-struct LineReader<'a> {
-    converter: FirestoreJsonConverter<'a>,
-}
-
-impl LineReader<'_> {
-    fn document(&self, line: usize, text: &[u8]) -> Result<FirestoreDocument, ImportLine> {
-        let failed = |cause| ImportLine { line, cause };
-        let tagged = serde_json::from_slice::<FirestoreTaggedJson>(text)
-            .map_err(|error| failed(ImportLineCause::InvalidJson(error)))?;
-        self.converter
-            .document_from_tagged(tagged)
-            .map_err(|error| failed(error.into()))
-    }
+fn read_document(
+    converter: &FirestoreJsonConverter<'_>,
+    line: usize,
+    text: &[u8],
+) -> Result<FirestoreDocument, ImportLine> {
+    let failed = |cause| ImportLine { line, cause };
+    let tagged = serde_json::from_slice::<FirestoreTaggedJson>(text)
+        .map_err(|error| failed(ImportLineCause::InvalidJson(error)))?;
+    converter
+        .document_from_tagged(tagged)
+        .map_err(|error| failed(error.into()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::args::{CliArgs, CliCommand};
-    use clap::Parser;
     use firestore::errors::codes::JSON_UNKNOWN_WRAPPER;
     use firestore::errors::{
         FirestoreError, FirestoreInvalidParametersError, FirestoreInvalidParametersPublicDetails,
@@ -382,19 +396,19 @@ mod tests {
     const DOCUMENTS_PATH: &str = "projects/demo/databases/(default)/documents";
 
     fn import_args(arguments: &[&str]) -> Result<ImportArgs, clap::Error> {
-        let arguments = ["fsq", "import", "books.jsonl"]
-            .into_iter()
-            .chain(arguments.iter().copied());
-        match CliArgs::try_parse_from(arguments)?.command {
+        match CliArgs::parse_command(&[&["import", "books.jsonl"], arguments].concat())? {
             Some(CliCommand::Import(args)) => Ok(args),
             other => panic!("not an import: {other:?}"),
         }
     }
 
-    fn reader() -> LineReader<'static> {
-        LineReader {
-            converter: FirestoreJsonConverter::new(DOCUMENTS_PATH),
-        }
+    fn write_of(arguments: &[&str], document: FirestoreDocument) -> Write {
+        let args = import_args(arguments).expect("arguments");
+        args.write(document, args.current_document().expect("a precondition"))
+    }
+
+    fn converter() -> FirestoreJsonConverter<'static> {
+        FirestoreJsonConverter::new(DOCUMENTS_PATH)
     }
 
     fn value(value_type: ValueType) -> Value {
@@ -416,16 +430,11 @@ mod tests {
     }
 
     fn queued(line: usize, document: FirestoreDocument) -> QueuedWrite {
-        QueuedWrite {
-            origin: Origin {
-                line,
-                document: format!("books/{}", document.name.rsplit('/').next().unwrap_or("")),
-            },
-            write: import_args(&[])
-                .expect("arguments")
-                .write(document)
-                .expect("a write"),
-        }
+        let origin = Origin {
+            line,
+            document: format!("books/{}", document.name.rsplit('/').next().unwrap_or("")),
+        };
+        QueuedWrite::new(origin, write_of(&[], document))
     }
 
     fn origins(lines: impl IntoIterator<Item = usize>) -> Vec<Origin> {
@@ -448,9 +457,7 @@ mod tests {
 
     #[test]
     fn a_line_that_is_not_json_names_its_line_number() {
-        let error = reader()
-            .document(3, b"{\"__name__\": ")
-            .expect_err("not JSON");
+        let error = read_document(&converter(), 3, b"{\"__name__\": ").expect_err("not JSON");
 
         assert_eq!(error.line, 3);
         assert!(matches!(error.cause, ImportLineCause::InvalidJson(_)));
@@ -458,9 +465,12 @@ mod tests {
 
     #[test]
     fn a_refused_document_carries_the_code_of_the_crate() {
-        let error = reader()
-            .document(7, br#"{"__name__": "books/dune", "at": {"$when": "x"}}"#)
-            .expect_err("an unknown wrapper");
+        let error = read_document(
+            &converter(),
+            7,
+            br#"{"__name__": "books/dune", "at": {"$when": "x"}}"#,
+        )
+        .expect_err("an unknown wrapper");
 
         assert_eq!(error.line, 7);
         assert!(matches!(
@@ -472,10 +482,7 @@ mod tests {
 
     #[test]
     fn by_default_a_write_replaces_the_document() {
-        let write = import_args(&[])
-            .expect("arguments")
-            .write(dune())
-            .expect("a write");
+        let write = write_of(&[], dune());
 
         assert_eq!(write.update_mask, None);
         assert_eq!(write.current_document, None);
@@ -485,10 +492,7 @@ mod tests {
     #[test]
     fn skip_and_fail_write_only_a_document_that_is_absent() {
         for flag in ["skip", "fail"] {
-            let write = import_args(&["--on-conflict", flag])
-                .expect("arguments")
-                .write(dune())
-                .expect("a write");
+            let write = write_of(&["--on-conflict", flag], dune());
 
             assert_eq!(
                 write.current_document.and_then(|condition| condition.condition_type),
@@ -506,10 +510,7 @@ mod tests {
             value(ValueType::IntegerValue(412)),
         );
 
-        let write = import_args(&["--merge"])
-            .expect("arguments")
-            .write(document)
-            .expect("a write");
+        let write = write_of(&["--merge"], document);
 
         assert_eq!(
             write.update_mask,

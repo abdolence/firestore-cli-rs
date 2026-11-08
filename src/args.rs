@@ -73,6 +73,15 @@ pub enum CliCommand {
     Index(IndexCommand),
 }
 
+#[cfg(test)]
+impl CliArgs {
+    /// Parses the arguments that follow `fsq` and returns the subcommand they select.
+    pub fn parse_command(arguments: &[&str]) -> Result<Option<CliCommand>, clap::Error> {
+        let arguments = ["fsq"].into_iter().chain(arguments.iter().copied());
+        Ok(Self::try_parse_from(arguments)?.command)
+    }
+}
+
 #[derive(Args, Debug, Default)]
 pub struct SqlArgs {
     #[arg(

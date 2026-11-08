@@ -65,11 +65,9 @@ pub async fn run(connection: &Connection, args: &ExportArgs) -> FsqResult<()> {
     let to_terminal = args.output.is_none() && std::io::stdout().is_terminal();
     let export = Export {
         db: &connection.db,
-        format: ExportFormat {
-            converter: connection.db.json(),
-            options: FirestoreJsonDocumentOptions::new().with_metadata(args.with_metadata),
-            plain: args.plain,
-        },
+        converter: connection.db.json(),
+        options: FirestoreJsonDocumentOptions::new().with_metadata(args.with_metadata),
+        plain: args.plain,
         recursive: args.recursive,
         progress: if to_terminal {
             ProgressBar::hidden()
@@ -101,7 +99,9 @@ pub async fn run(connection: &Connection, args: &ExportArgs) -> FsqResult<()> {
 
 struct Export<'a> {
     db: &'a FirestoreDb,
-    format: ExportFormat<'a>,
+    converter: FirestoreJsonConverter<'a>,
+    options: FirestoreJsonDocumentOptions,
+    plain: bool,
     recursive: bool,
     progress: ProgressBar,
 }
@@ -109,20 +109,14 @@ struct Export<'a> {
 impl Export<'_> {
     async fn write<W: Write>(&self, source: ExportSource, mut writer: W) -> FsqResult<usize> {
         let mut subcollections = VecDeque::new();
-        let first = match source {
-            ExportSource::Sql(sql) => Some(self.rows(&sql).await?),
-            ExportSource::Group(group) => Some(self.group(&group).await?),
-            ExportSource::Collection(path) => {
-                subcollections.push_back(path);
-                None
-            }
+        let documents = match source {
+            ExportSource::Sql(sql) => self.rows(&sql).await?,
+            ExportSource::Group(group) => self.group(&group).await?,
+            ExportSource::Collection(path) => self.collection(&path).await?,
         };
-        let mut exported = 0;
-        if let Some(documents) = first {
-            exported += self
-                .write_documents(documents, &mut writer, &mut subcollections)
-                .await?;
-        }
+        let mut exported = self
+            .write_documents(documents, &mut writer, &mut subcollections)
+            .await?;
         while let Some(path) = subcollections.pop_front() {
             let documents = self.collection(&path).await?;
             exported += self
@@ -145,7 +139,7 @@ impl Export<'_> {
             // A missing document, listed under --recursive for its subcollections, has no times.
             let exists = document.create_time.is_some();
             if exists {
-                self.format.write_line(writer, &document)?;
+                self.write_line(writer, &document)?;
                 self.progress.inc(1);
                 written += 1;
             }
@@ -161,13 +155,27 @@ impl Export<'_> {
         document: &FirestoreDocument,
         subcollections: &mut VecDeque<CollectionPath>,
     ) -> FsqResult<()> {
-        let parent = self.format.converter.relative_name(&document.name);
+        let parent = self.converter.relative_name(&document.name);
         for collection_id in Walk::new(self.db)
             .collection_ids(Some(&document.name))
             .await?
         {
             subcollections.push_back(CollectionPath::in_document(parent, collection_id));
         }
+        Ok(())
+    }
+
+    fn write_line<W: Write>(&self, writer: &mut W, document: &FirestoreDocument) -> FsqResult<()> {
+        let json = if self.plain {
+            self.converter
+                .plain_document(document, &self.options)
+                .into_inner()
+        } else {
+            self.converter
+                .tagged_document(document, &self.options)?
+                .into_inner()
+        };
+        writeln!(writer, "{json}")?;
         Ok(())
     }
 
@@ -236,39 +244,13 @@ impl TryFrom<&ExportArgs> for ExportSource {
     }
 }
 
-struct ExportFormat<'a> {
-    converter: FirestoreJsonConverter<'a>,
-    options: FirestoreJsonDocumentOptions,
-    plain: bool,
-}
-
-impl ExportFormat<'_> {
-    fn write_line<W: Write>(&self, writer: &mut W, document: &FirestoreDocument) -> FsqResult<()> {
-        let json = if self.plain {
-            self.converter
-                .plain_document(document, &self.options)
-                .into_inner()
-        } else {
-            self.converter
-                .tagged_document(document, &self.options)?
-                .into_inner()
-        };
-        writeln!(writer, "{json}")?;
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::args::{CliArgs, CliCommand};
-    use clap::Parser;
 
     fn export_args(arguments: &[&str]) -> Result<ExportArgs, clap::Error> {
-        let arguments = ["fsq", "export"]
-            .into_iter()
-            .chain(arguments.iter().copied());
-        match CliArgs::try_parse_from(arguments)?.command {
+        match CliArgs::parse_command(&[&["export"], arguments].concat())? {
             Some(CliCommand::Export(args)) => Ok(args),
             other => panic!("not an export: {other:?}"),
         }
