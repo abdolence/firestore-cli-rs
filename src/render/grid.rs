@@ -148,7 +148,12 @@ impl View<'_> {
         }
     }
 
+    /// A grid without columns, the result of a statement that returned no documents, has nothing
+    /// to draw: the footer's row count is the whole answer.
     fn grid_text(&self, grid: &Grid) -> String {
+        if grid.columns.is_empty() {
+            return String::new();
+        }
         match self.expanded {
             ExpandedMode::On => self.expanded_text(grid),
             ExpandedMode::Off => {
@@ -344,6 +349,31 @@ mod tests {
 
         assert!(auto_expanded_at(80, &grid).starts_with('╭'));
         assert!(auto_expanded_at(10, &grid).starts_with("-[ RECORD 1 ]"));
+    }
+
+    #[test]
+    fn a_result_without_columns_draws_no_table() {
+        let theme = Theme::new(false);
+        let empty = Grid::from_documents(Vec::new(), &[]);
+
+        for expanded in [ExpandedMode::Off, ExpandedMode::On, ExpandedMode::Auto] {
+            assert_eq!(view(&theme, OutputFormat::Table, expanded).grid(&empty), "");
+        }
+    }
+
+    #[test]
+    fn a_result_without_rows_is_an_empty_json_array_and_no_json_lines() {
+        let theme = Theme::new(false);
+        let empty = Grid::from_documents(Vec::new(), &[]);
+
+        assert_eq!(
+            view(&theme, OutputFormat::Json, ExpandedMode::Off).grid(&empty),
+            "[]\n"
+        );
+        assert_eq!(
+            view(&theme, OutputFormat::Jsonl, ExpandedMode::Off).grid(&empty),
+            ""
+        );
     }
 
     fn restaurants() -> Grid {

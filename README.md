@@ -109,6 +109,7 @@ my-project/my-database (enterprise)> SELECT __name__, title, address, tags, publ
 * an empty cell is a field the document lacks, and `NULL` is a field that holds null. Firestore keeps the two
   apart, see the [semantics](https://firestore-rust.abdolence.dev/editions/semantics.html) of pipelines;
 * a table wider than the terminal is cut to fit it, the longest cells first, with `…`; a table that is piped is not cut;
+* a statement that returns no documents prints the footer alone, `0 rows`, and `--format json` an empty array;
 * a statement without `LIMIT` shows a page that fits the terminal and asks before the next one. A statement with
   `LIMIT` shows all its rows, and `EXPLAIN` is never paged, since its plan arrives with the last row;
 * the footer shows the rows, the time the statement took and its notes, such as `more rows remain`.
