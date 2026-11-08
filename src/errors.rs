@@ -26,6 +26,8 @@ pub enum FsqError {
     ReadScript(ReadScript),
     #[error(transparent)]
     OpenFile(OpenFile),
+    #[error("export needs a collection or --sql")]
+    ExportWithoutSource,
     #[error("export --sql runs a SELECT, and this statement is not one")]
     ExportNeedsRows,
     #[error(transparent)]

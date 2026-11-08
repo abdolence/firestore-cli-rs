@@ -9,11 +9,10 @@ use firestore::errors::FirestoreError;
 use firestore::gcloud_sdk::google::firestore::v1::{write::Operation, DocumentMask, Write};
 use firestore::gcloud_sdk::tonic::Code;
 use firestore::{
-    FirestoreDocument, FirestoreJsonConverter, FirestoreSimpleBatchWriter, FirestoreTaggedJson,
-    FirestoreWritePrecondition,
+    FirestoreDocument, FirestoreFieldPathSegment, FirestoreJsonConverter,
+    FirestoreSimpleBatchWriter, FirestoreTaggedJson, FirestoreWritePrecondition,
 };
 use indicatif::{ProgressBar, ProgressStyle};
-use std::borrow::Cow;
 use std::convert::Infallible;
 use std::fmt::{Display, Formatter};
 use std::fs::File;
@@ -43,11 +42,9 @@ impl FromStr for ImportInput {
     }
 }
 
-/// What import does with a document that already exists.
+/// What import does with a document that already exists. Without a policy, import replaces it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OnConflict {
-    /// Replace the document.
-    Overwrite,
     /// Leave the document as it is and count it as skipped.
     Skip,
     /// Report the document as a failure.
@@ -62,10 +59,9 @@ pub struct ImportArgs {
     #[arg(
         long,
         value_enum,
-        default_value_t = OnConflict::Overwrite,
-        help = "What to do with a document that already exists"
+        help = "What to do with a document that already exists, instead of replacing it"
     )]
-    pub on_conflict: OnConflict,
+    pub on_conflict: Option<OnConflict>,
 
     #[arg(
         long,
@@ -85,17 +81,15 @@ impl ImportArgs {
     /// The write that stores `document` as this import was asked to: replacing the document,
     /// merging into it, or only creating it.
     fn write(&self, document: FirestoreDocument) -> FsqResult<Write> {
-        let current_document = match self.on_conflict {
-            OnConflict::Overwrite => None,
-            OnConflict::Skip | OnConflict::Fail => {
-                Some(FirestoreWritePrecondition::Exists(false).try_into()?)
-            }
-        };
+        let current_document = self
+            .on_conflict
+            .map(|_| FirestoreWritePrecondition::Exists(false).try_into())
+            .transpose()?;
         let update_mask = self.merge.then(|| {
             let mut field_paths: Vec<_> = document
                 .fields
                 .keys()
-                .map(|name| field_path_segment(name).into_owned())
+                .map(|name| FirestoreFieldPathSegment::from(name.as_str()).to_string())
                 .collect();
             field_paths.sort_unstable();
             DocumentMask { field_paths }
@@ -111,7 +105,7 @@ impl ImportArgs {
     /// Whether a write that failed with `code` is a document skipped for already existing, and
     /// not a failure.
     fn skips(&self, code: Code) -> bool {
-        self.on_conflict == OnConflict::Skip && code == Code::AlreadyExists
+        self.on_conflict == Some(OnConflict::Skip) && code == Code::AlreadyExists
     }
 }
 
@@ -325,23 +319,6 @@ impl From<FirestoreError> for ImportLineCause {
             }),
             other => Self::Firestore(other),
         }
-    }
-}
-
-/// `name` as one segment of a field path, between backticks unless it is a simple identifier.
-fn field_path_segment(name: &str) -> Cow<'_, str> {
-    let simple = name
-        .chars()
-        .next()
-        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-    if simple {
-        Cow::Borrowed(name)
-    } else {
-        Cow::Owned(format!(
-            "`{}`",
-            name.replace('\\', "\\\\").replace('`', "\\`")
-        ))
     }
 }
 
@@ -575,6 +552,13 @@ mod tests {
         assert!(skip.skips(Code::AlreadyExists));
         assert!(!skip.skips(Code::PermissionDenied));
         assert!(!fail.skips(Code::AlreadyExists));
+    }
+
+    #[test]
+    fn overwrite_is_not_a_conflict_policy() {
+        let error = import_args(&["--on-conflict", "overwrite"]).expect_err("not a policy");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
     }
 
     #[test]

@@ -195,11 +195,13 @@ the firestore crate. A bar shows the position in the file, or a spinner when the
 
 | Option | What it does |
 |---|---|
-| `--on-conflict overwrite` | the default: creates a document, or replaces it when it exists, so that an export imported again gives the same documents |
 | `--on-conflict skip` | leaves a document that exists as it is and counts it as skipped |
 | `--on-conflict fail` | reports a document that exists as a failure |
 | `--merge` | writes the top-level fields a line lists, and keeps the other fields of an existing document; it cannot be combined with `--on-conflict` |
 | `--keep-going` | goes on after a failure and reports every one |
+
+Without `--on-conflict` or `--merge`, import creates a document, or replaces it when it exists, so that an export
+imported again gives the same documents.
 
 A line that is not valid JSON, or not a document in the tagged encoding, fails with its line number and the code of
 the firestore crate, such as `JSON_UNKNOWN_WRAPPER`. A document that Firestore refuses fails with its line number and

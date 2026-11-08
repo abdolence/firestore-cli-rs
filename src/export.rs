@@ -2,6 +2,7 @@ use crate::connection::Connection;
 use crate::describe::CollectionPath;
 use crate::errors::{FsqError, FsqResult, InvalidCollectionPath, OpenFile};
 use crate::render::{counted, Output};
+use clap::ArgGroup;
 use firestore::{
     FirestoreCollectionId, FirestoreDb, FirestoreDocument, FirestoreJsonConverter,
     FirestoreJsonDocumentOptions, FirestoreResult, FirestoreSqlOptions, FirestoreSqlOutcome,
@@ -16,10 +17,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
+#[command(group(ArgGroup::new("source").required(true).args(["collection", "sql"])))]
 pub struct ExportArgs {
     #[arg(
-        required_unless_present = "sql",
-        conflicts_with = "sql",
         help = "Collection path, such as `books` or `users/alice/orders`; with --group, a collection ID"
     )]
     pub collection: Option<CollectionPath>,
@@ -240,13 +240,13 @@ impl TryFrom<&ExportArgs> for ExportSource {
     type Error = FsqError;
 
     fn try_from(args: &ExportArgs) -> FsqResult<Self> {
-        if let Some(sql) = &args.sql {
-            return Ok(Self::Sql(sql.clone()));
-        }
-        let path = args
-            .collection
-            .as_ref()
-            .expect("clap requires a collection when there is no --sql");
+        let Some(path) = &args.collection else {
+            return args
+                .sql
+                .clone()
+                .map(Self::Sql)
+                .ok_or(FsqError::ExportWithoutSource);
+        };
         if !args.group {
             return Ok(Self::Collection(path.clone()));
         }
@@ -357,6 +357,23 @@ mod tests {
         let error = export_args(&["books", "--sql", "SELECT * FROM books"]).expect_err("conflict");
 
         assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn a_collection_or_sql_is_required() {
+        let error = export_args(&[]).expect_err("no source");
+
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn arguments_without_a_source_are_an_error_and_not_a_panic() {
+        let mut args = export_args(&["books"]).expect("arguments parse");
+        args.collection = None;
+
+        let error = ExportSource::try_from(&args).expect_err("no source");
+
+        assert!(matches!(error, FsqError::ExportWithoutSource));
     }
 
     #[test]
