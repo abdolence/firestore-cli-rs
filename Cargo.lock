@@ -750,9 +750,9 @@ checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
 name = "firestore"
-version = "0.65.2"
+version = "0.65.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b41c9e2cc4bff7286dc50c9a353b11a4e899d480afe18f970161804c8d01f39"
+checksum = "20915dfa5dbfdaac23195f4bb74aa6287cb7ca7231ad5428727b8eee48339384"
 dependencies = [
  "async-trait",
  "backon",
