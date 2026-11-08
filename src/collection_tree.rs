@@ -3,7 +3,7 @@ use crate::errors::{FsqError, FsqResult, InvalidTreeDepth};
 use crate::render::{Cell, Grid, Sample};
 use crate::walk::Walk;
 use firestore::{FirestoreCollectionId, FirestoreDb};
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroU32;
@@ -96,6 +96,60 @@ struct Level {
     instances: Vec<CollectionPath>,
 }
 
+/// How many collection paths of one level are sampled at once. Each path costs a listing of its
+/// documents and then its calls of [`COLLECTION_ID_CALLS_IN_FLIGHT`] at a time, and Firestore can
+/// take seconds to answer each of them.
+const LEVELS_IN_FLIGHT: usize = 8;
+
+impl Level {
+    /// Samples the first `limit` documents across the collections of this path, and lists the
+    /// collections under them as the next `depth`: the rows they make and the levels they open.
+    async fn sample(
+        self,
+        walk: &Walk<'_>,
+        documents_path: &str,
+        limit: usize,
+        depth: usize,
+    ) -> FsqResult<(Vec<TreeCollection>, Vec<Level>)> {
+        let documents = walk.first_document_names(&self.instances, limit).await?;
+        let listings: Vec<_> = futures::stream::iter(&documents)
+            .map(|document| walk.collection_ids(Some(document)))
+            .buffered(COLLECTION_ID_CALLS_IN_FLIGHT)
+            .collect()
+            .await;
+        let mut found: BTreeMap<FirestoreCollectionId, Vec<CollectionPath>> = BTreeMap::new();
+        for (document, listing) in documents.iter().zip(listings) {
+            let relative = FirestoreDb::relative_document_name(documents_path, document);
+            for id in listing? {
+                let path = CollectionPath::in_document(relative, id.clone());
+                found.entry(id).or_default().push(path);
+            }
+        }
+        let mut collections = Vec::new();
+        let mut next_levels = Vec::new();
+        for (id, instances) in found {
+            let path = format!("{}/*/{id}", self.path);
+            collections.push(TreeCollection {
+                path: path.clone(),
+                id: id.clone(),
+                depth,
+                seen_under: Some(format!(
+                    "{} of {} sampled {}",
+                    instances.len(),
+                    documents.len(),
+                    self.id
+                )),
+            });
+            next_levels.push(Level {
+                path,
+                id,
+                instances,
+            });
+        }
+        Ok((collections, next_levels))
+    }
+}
+
 impl CollectionTree {
     /// Lists the collections under the root, then the subcollections of a sample of the
     /// documents of each, down to `target.depth`. A sample is the first `target.sample`
@@ -122,44 +176,16 @@ impl CollectionTree {
             });
         }
         for depth in 2..=target.depth.levels() as usize {
-            let mut next_levels = Vec::new();
-            for level in levels {
-                let documents = walk.first_document_names(&level.instances, limit).await?;
-                let listings: Vec<_> = futures::stream::iter(&documents)
-                    .map(|document| walk.collection_ids(Some(document)))
-                    .buffered(COLLECTION_ID_CALLS_IN_FLIGHT)
-                    .collect()
-                    .await;
-                let mut found: BTreeMap<FirestoreCollectionId, Vec<CollectionPath>> =
-                    BTreeMap::new();
-                for (document, listing) in documents.iter().zip(listings) {
-                    let relative = FirestoreDb::relative_document_name(documents_path, document);
-                    for id in listing? {
-                        let path = CollectionPath::in_document(relative, id.clone());
-                        found.entry(id).or_default().push(path);
-                    }
-                }
-                for (id, instances) in found {
-                    let path = format!("{}/*/{id}", level.path);
-                    collections.push(TreeCollection {
-                        path: path.clone(),
-                        id: id.clone(),
-                        depth,
-                        seen_under: Some(format!(
-                            "{} of {} sampled {}",
-                            instances.len(),
-                            documents.len(),
-                            level.id
-                        )),
-                    });
-                    next_levels.push(Level {
-                        path,
-                        id,
-                        instances,
-                    });
-                }
+            let sampled: Vec<_> = futures::stream::iter(levels)
+                .map(|level| level.sample(&walk, documents_path, limit, depth))
+                .buffered(LEVELS_IN_FLIGHT)
+                .try_collect()
+                .await?;
+            levels = Vec::new();
+            for (found, opened) in sampled {
+                collections.extend(found);
+                levels.extend(opened);
             }
-            levels = next_levels;
         }
         Ok(Self {
             target,
