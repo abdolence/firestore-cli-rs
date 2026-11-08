@@ -1,3 +1,4 @@
+use crate::script::Input;
 use firestore::errors::FirestoreError;
 use firestore::gcloud_sdk::tonic::Code;
 use firestore::FirestoreCollectionId;
@@ -68,6 +69,8 @@ pub enum FsqError {
     Interrupted,
     #[error(transparent)]
     InputsFailed(InputsFailed),
+    #[error(transparent)]
+    InputFailed(InputFailed),
     #[error(transparent)]
     Readline(#[from] reedline::ReedlineError),
     #[error(transparent)]
@@ -262,7 +265,32 @@ pub struct InputsFailed {
     pub failed: usize,
 }
 
+/// An input of a script, which stops at the first failure, with the position and start of the
+/// input that failed.
+#[derive(Debug, Error)]
+#[error("input {number} ({excerpt}) failed: {source}")]
+pub struct InputFailed {
+    pub number: usize,
+    pub excerpt: String,
+    #[source]
+    pub source: Box<FsqError>,
+}
+
 impl FsqError {
+    /// This error as the failure of input `number` of a script. An interrupt and a closed output
+    /// pipe are not failures of the input, and the caller's exit code depends on seeing them as
+    /// they are.
+    pub fn in_input(self, number: usize, input: &Input) -> Self {
+        if matches!(self, Self::Interrupted) || self.is_broken_pipe() {
+            return self;
+        }
+        Self::InputFailed(InputFailed {
+            number,
+            excerpt: input.excerpt(),
+            source: Box::new(self),
+        })
+    }
+
     pub fn file_access(path: &Path, access: FileAccess, source: std::io::Error) -> Self {
         Self::FileAccessFailed(FileAccessFailed {
             path: path.to_path_buf(),
@@ -290,5 +318,27 @@ impl FsqError {
     /// The reader of piped output, such as `head`, stopped reading.
     pub fn is_broken_pipe(&self) -> bool {
         matches!(self, Self::Io(error) if error.kind() == std::io::ErrorKind::BrokenPipe)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failure_is_named_by_its_input_and_an_interrupt_or_a_closed_pipe_is_not() {
+        let input = Input::Statement("SELECT 1".to_string());
+        let closed_pipe = FsqError::Io(std::io::ErrorKind::BrokenPipe.into());
+
+        assert!(matches!(
+            FsqError::NoProject.in_input(2, &input),
+            FsqError::InputFailed(InputFailed { number: 2, ref source, .. })
+                if matches!(**source, FsqError::NoProject)
+        ));
+        assert!(matches!(
+            FsqError::Interrupted.in_input(2, &input),
+            FsqError::Interrupted
+        ));
+        assert!(closed_pipe.in_input(2, &input).is_broken_pipe());
     }
 }

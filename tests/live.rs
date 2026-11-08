@@ -279,6 +279,38 @@ fn import_counts_a_repeated_document_by_its_conflict_policy() {
     );
 }
 
+#[test]
+fn import_without_keep_going_names_every_document_of_the_request_that_failed() {
+    let root = unique_name("fsq-live-names-failures");
+    let _cleanup = Collections(vec![root.clone()]);
+    let lines: String = (1..=4)
+        .map(|number| format!("{{\"__name__\":\"{root}/d{number}\",\"n\":{number}}}\n"))
+        .collect();
+    assert!(fsq(&["import", "-"], &lines).succeeded);
+
+    let again = fsq(&["import", "-", "--on-conflict", "fail"], &lines);
+
+    assert!(!again.succeeded);
+    for number in 1..=4 {
+        assert!(
+            again.stderr.contains(&format!("{root}/d{number}")),
+            "{}",
+            again.stderr
+        );
+    }
+}
+
+#[test]
+fn a_failed_statement_of_a_script_is_named() {
+    let run = fsq(
+        &["sql", "-e", "SHOW COLLECTIONS; SELECT marker_field FROM"],
+        "",
+    );
+
+    assert!(!run.succeeded);
+    assert!(run.stderr.contains("marker_field"), "{}", run.stderr);
+}
+
 // The `index_rights_` prefix keeps a test out of CI, whose account has no Firestore index rights.
 #[test]
 fn index_rights_sync_declares_the_indexes_of_every_group_of_the_file() {

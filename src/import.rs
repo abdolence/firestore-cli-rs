@@ -340,8 +340,9 @@ impl Import<'_> {
         Err(error)
     }
 
-    /// Sends the queued writes in one request. Without `--keep-going` the first failure is
-    /// returned once all are counted.
+    /// Sends the queued writes in one request and reports each failure of it, since the request
+    /// has already written the other documents. Without `--keep-going` the import ends after a
+    /// request with a failure.
     async fn flush(&mut self) -> FsqResult<()> {
         let batch = std::mem::take(&mut self.batch);
         if batch.queued.is_empty() {
@@ -357,11 +358,13 @@ impl Import<'_> {
         let outcome = request.write().await.map(|response| response.statuses);
         let failures = self.tally.settle(self.args, origins, outcome);
         self.progress.set_message(self.tally.to_string());
-        if self.args.keep_going {
-            failures.iter().for_each(|failure| self.report(failure));
+        failures.iter().for_each(|failure| self.report(failure));
+        if self.args.keep_going || failures.is_empty() {
             return Ok(());
         }
-        failures.into_iter().next().map_or(Ok(()), Err)
+        Err(FsqError::InputsFailed(InputsFailed {
+            failed: self.tally.failed,
+        }))
     }
 
     fn report(&self, error: &FsqError) {

@@ -7,6 +7,34 @@ pub enum Input {
     Meta(String),
 }
 
+/// How many characters of an input name it when a failure has to say which one it came from.
+const EXCERPT_CHARS: usize = 60;
+
+impl Input {
+    fn text(&self) -> &str {
+        match self {
+            Self::Statement(text) | Self::Meta(text) => text,
+        }
+    }
+
+    /// The first line of the input, cut at [`EXCERPT_CHARS`] characters and marked with `…` when
+    /// there is more.
+    pub fn excerpt(&self) -> String {
+        let text = self.text();
+        let mut excerpt: String = text
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take(EXCERPT_CHARS)
+            .collect();
+        if excerpt.len() < text.len() {
+            excerpt.push('…');
+        }
+        excerpt
+    }
+}
+
 /// Text split into inputs. The crate takes exactly one statement per call, so a script runs
 /// statement by statement: each ends at a `;` outside a string, a quoted name or a comment. A
 /// line that starts with `\` where a statement would start, after any comments, is a
@@ -74,6 +102,17 @@ mod tests {
 
     fn statement(text: &str) -> Input {
         Input::Statement(text.to_string())
+    }
+
+    #[test]
+    fn an_excerpt_is_the_first_line_cut_short_and_marked() {
+        assert_eq!(statement("SELECT 1").excerpt(), "SELECT 1");
+        assert_eq!(statement("SELECT a\nFROM books").excerpt(), "SELECT a…");
+        assert_eq!(
+            statement(&"x".repeat(EXCERPT_CHARS + 1)).excerpt(),
+            format!("{}…", "x".repeat(EXCERPT_CHARS))
+        );
+        assert_eq!(Input::Meta("\\d books".to_string()).excerpt(), "\\d books");
     }
 
     #[test]

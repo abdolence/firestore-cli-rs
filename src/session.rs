@@ -94,10 +94,15 @@ impl Session {
         }
     }
 
-    /// Runs every statement and meta-command of `text` in order, and stops at the first error.
+    /// Runs every statement and meta-command of `text` in order, and stops at the first error,
+    /// which names the input it came from.
     pub async fn run_script(&mut self, text: &str) -> FsqResult<()> {
-        for input in Script::parse(text).into_inputs() {
-            if self.run_input(&input).await? == Flow::Quit {
+        for (index, input) in Script::parse(text).into_inputs().iter().enumerate() {
+            let flow = self
+                .run_input(input)
+                .await
+                .map_err(|error| error.in_input(index + 1, input))?;
+            if flow == Flow::Quit {
                 break;
             }
         }
