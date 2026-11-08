@@ -70,7 +70,7 @@ pub enum FsqError {
     #[error(transparent)]
     InputsFailed(InputsFailed),
     #[error(transparent)]
-    InputFailed(InputFailed),
+    ScriptInputFailed(ScriptInputFailed),
     #[error(transparent)]
     Readline(#[from] reedline::ReedlineError),
     #[error(transparent)]
@@ -269,7 +269,7 @@ pub struct InputsFailed {
 /// input that failed.
 #[derive(Debug, Error)]
 #[error("input {number} ({excerpt}) failed: {source}")]
-pub struct InputFailed {
+pub struct ScriptInputFailed {
     pub number: usize,
     pub excerpt: String,
     #[source]
@@ -284,7 +284,7 @@ impl FsqError {
         if matches!(self, Self::Interrupted) || self.is_broken_pipe() {
             return self;
         }
-        Self::InputFailed(InputFailed {
+        Self::ScriptInputFailed(ScriptInputFailed {
             number,
             excerpt: input.excerpt(),
             source: Box::new(self),
@@ -332,7 +332,7 @@ mod tests {
 
         assert!(matches!(
             FsqError::NoProject.in_input(2, &input),
-            FsqError::InputFailed(InputFailed { number: 2, ref source, .. })
+            FsqError::ScriptInputFailed(ScriptInputFailed { number: 2, ref source, .. })
                 if matches!(**source, FsqError::NoProject)
         ));
         assert!(matches!(
