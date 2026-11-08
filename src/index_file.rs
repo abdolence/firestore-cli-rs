@@ -1,14 +1,14 @@
 //! The `firestore.indexes.json` format of the Firebase CLI, read into the declarations the
 //! firestore crate plans and syncs, and written from a listing of a live database.
 //!
-//! The Firebase format has no place for what only the Enterprise edition offers, nor for a TTL
-//! field that keeps its automatic single-field indexes. Those go under `fsq` keys, which the
-//! Firebase CLI ignores: `fsq` on the file (`ttl`), on an index (`unique`, `density`, `search`)
-//! and on an index field (`mode`, for text and geo search fields). Keys that neither the Firebase
-//! format nor `fsq` defines are refused rather than ignored, since an ignored `ttl` or `density`
-//! of the Firebase format would be dropped from the declaration without a word.
+//! Every key the Firebase CLI reads and writes is the Firebase key. Only what the format cannot
+//! carry goes under an `fsq` key, which the Firebase CLI ignores: the language options of a search
+//! index, `unique` (the Firebase CLI refuses it), and a TTL field whose indexes are inherited, since
+//! Firebase writes `ttl` on a field override only. Keys that neither Firebase nor `fsq` defines are
+//! refused rather than ignored, so that no setting is dropped without a word.
 
-use crate::errors::{IndexesFileProblem, InvalidFieldMode, UnreadKeys};
+use crate::errors::{IndexesFileProblem, InvalidFieldMode, UnreadKeys, UnsupportedSetting};
+use clap::ValueEnum;
 use firestore::{
     FirestoreCollectionId, FirestoreCompositeIndex, FirestoreFieldOverride,
     FirestoreFieldOverrideIndex, FirestoreFieldOverrideOutcome, FirestoreFieldOverrideTarget,
@@ -19,7 +19,6 @@ use firestore::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 
 /// The `fieldPath` that names every field of a collection group, as in the Firebase format.
@@ -36,11 +35,10 @@ pub struct IndexesFile {
     pub fsq: Option<FileExtras>,
 }
 
-/// The `fsq` key of the file.
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileExtras {
-    /// The fields whose timestamp value enables document TTL, one per collection group.
+    /// The TTL fields that have no field override to carry `ttl`.
     #[serde(default)]
     pub ttl: Vec<FileTtlField>,
 }
@@ -48,28 +46,52 @@ pub struct FileExtras {
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileTtlField {
-    pub collection_group: String,
+    pub collection_group: FirestoreCollectionId,
     pub field_path: String,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileIndex {
-    pub collection_group: String,
-    pub query_scope: FileQueryScope,
+    pub collection_group: FirestoreCollectionId,
+    pub query_scope: IndexScope,
     pub fields: Vec<FileIndexField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_scope: Option<FileApiScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub density: Option<FileDensity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multikey: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unique: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fsq: Option<FileIndexExtras>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Whether an index serves queries against one collection or across every collection with the
+/// group's ID.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum FileQueryScope {
+pub enum IndexScope {
+    /// Queries against one collection.
+    #[default]
     Collection,
+    /// Queries across every collection with the group's ID.
+    #[value(name = "group")]
     CollectionGroup,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FileApiScope {
+    #[serde(rename = "ANY_API")]
+    Any,
+    #[serde(rename = "DATASTORE_MODE_API")]
+    DatastoreMode,
+    #[serde(rename = "MONGODB_COMPATIBLE_API")]
+    MongodbCompatible,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileIndexField {
     pub field_path: String,
@@ -78,7 +100,7 @@ pub struct FileIndexField {
 }
 
 /// How a field participates in an index. Exactly one of the four keys is set.
-#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileMode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -86,25 +108,68 @@ pub struct FileMode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub array_config: Option<FileArrayConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vector_config: Option<FileVectorConfig>,
+    pub search_config: Option<FileSearchConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fsq: Option<FileFieldExtras>,
+    pub vector_config: Option<FileVectorConfig>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum FileOrder {
     Ascending,
     Descending,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum FileArrayConfig {
     Contains,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+/// A text or a geo search field: exactly one of the two specs is set.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSearchConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_spec: Option<FileTextSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_spec: Option<FileGeoSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileTextSpec {
+    pub index_specs: Vec<FileTextIndexSpec>,
+}
+
+/// The one kind of text index Firestore has.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileTextIndexSpec {
+    pub index_type: FileTextIndexType,
+    pub match_type: FileTextMatchType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum FileTextIndexType {
+    Tokenized,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum FileTextMatchType {
+    MatchGlobally,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileGeoSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_json_indexing_disabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct FileVectorConfig {
     pub dimension: u32,
     #[serde(default)]
@@ -112,32 +177,15 @@ pub struct FileVectorConfig {
 }
 
 /// The `flat` key of a vector config, the one kind of vector index Firestore has.
-#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct FlatVectorIndex {}
 
-/// The `fsq` key of an index field: the modes the Firebase format has no key for.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum FileFieldExtras {
-    Text,
-    Geo(FileGeoOptions),
-}
-
-#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FileGeoOptions {
-    #[serde(default)]
-    pub geo_json_indexing_disabled: bool,
-}
-
-/// The `fsq` key of an index.
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileIndexExtras {
+    /// Firebase's own `unique` key is refused by the Firebase CLI, so fsq writes it here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unique: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub density: Option<FileDensity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search: Option<FileSearchOptions>,
 }
@@ -162,17 +210,20 @@ pub struct FileSearchOptions {
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileFieldOverride {
-    pub collection_group: String,
+    pub collection_group: FirestoreCollectionId,
     pub field_path: String,
+    /// Whether the field's timestamp expires the document. Firebase writes it on every override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<bool>,
     pub indexes: Vec<FileOverrideIndex>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileOverrideIndex {
-    pub query_scope: FileQueryScope,
     #[serde(flatten)]
     pub mode: FileMode,
+    pub query_scope: IndexScope,
 }
 
 impl FromStr for IndexesFile {
@@ -197,7 +248,8 @@ impl FromStr for IndexesFile {
 }
 
 /// The paths of the keys of `input` that `parsed`, the file read from it and written out again,
-/// does not have: the keys deserializing skipped.
+/// does not have: the keys deserialising skipped. A key set to `null` is an absent key, which
+/// writing leaves out.
 fn collect_unread_keys(
     input: &serde_json::Value,
     parsed: &serde_json::Value,
@@ -206,7 +258,7 @@ fn collect_unread_keys(
 ) {
     match (input, parsed) {
         (serde_json::Value::Object(input), serde_json::Value::Object(parsed)) => {
-            for (key, value) in input {
+            for (key, value) in input.iter().filter(|(_, value)| !value.is_null()) {
                 let parent_length = path.len();
                 if !path.is_empty() {
                     path.push('.');
@@ -231,25 +283,14 @@ fn collect_unread_keys(
     }
 }
 
-impl Display for IndexesFile {
-    /// The file as the Firebase CLI writes it: two-space indentation, no trailing newline.
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let json = serde_json::to_string_pretty(self).map_err(|_| std::fmt::Error)?;
-        f.write_str(&json)
-    }
-}
-
-/// The declarations of a file, keyed by the collection group that each owns.
 #[derive(Default)]
 struct Declarations(BTreeMap<FirestoreCollectionId, FirestoreIndexParams>);
 
 impl Declarations {
-    fn group(&mut self, id: &str) -> Result<&mut FirestoreIndexParams, IndexesFileProblem> {
-        let id = FirestoreCollectionId::new(id)?;
-        Ok(self
-            .0
+    fn group(&mut self, id: &FirestoreCollectionId) -> &mut FirestoreIndexParams {
+        self.0
             .entry(id.clone())
-            .or_insert_with(|| FirestoreIndexParams::new(id)))
+            .or_insert_with(|| FirestoreIndexParams::new(id.clone()))
     }
 }
 
@@ -259,19 +300,20 @@ impl IndexesFile {
         let mut declarations = Declarations::default();
         for index in self.indexes {
             declarations
-                .group(&index.collection_group)?
+                .group(&index.collection_group)
                 .composite_indexes
                 .push(index.try_into()?);
         }
         for field_override in self.field_overrides {
-            declarations
-                .group(&field_override.collection_group)?
-                .field_overrides
-                .push(field_override.try_into()?);
+            let params = declarations.group(&field_override.collection_group);
+            if field_override.ttl == Some(true) {
+                params.ttl_fields.push(field_override.field_path.clone());
+            }
+            params.field_overrides.push(field_override.try_into()?);
         }
         for ttl in self.fsq.unwrap_or_default().ttl {
             declarations
-                .group(&ttl.collection_group)?
+                .group(&ttl.collection_group)
                 .ttl_fields
                 .push(ttl.field_path);
         }
@@ -305,6 +347,21 @@ impl TryFrom<FileIndex> for FirestoreCompositeIndex {
     type Error = IndexesFileProblem;
 
     fn try_from(index: FileIndex) -> Result<Self, Self::Error> {
+        let unsupported = |setting| {
+            IndexesFileProblem::UnsupportedSetting(UnsupportedSetting {
+                collection_group: index.collection_group.clone(),
+                setting,
+            })
+        };
+        if index
+            .api_scope
+            .is_some_and(|scope| scope != FileApiScope::Any)
+        {
+            return Err(unsupported("apiScope other than ANY_API"));
+        }
+        if index.multikey == Some(true) {
+            return Err(unsupported("multikey"));
+        }
         let extras = index.fsq.unwrap_or_default();
         Ok(Self {
             fields: index
@@ -314,8 +371,8 @@ impl TryFrom<FileIndex> for FirestoreCompositeIndex {
                 .collect::<Result<_, _>>()?,
             query_scope: index.query_scope.into(),
             search_options: extras.search.map(Into::into),
-            unique: extras.unique.unwrap_or(false),
-            density: extras.density.map(Into::into),
+            unique: index.unique.or(extras.unique).unwrap_or(false),
+            density: index.density.map(Into::into),
         })
     }
 }
@@ -364,16 +421,32 @@ impl TryFrom<FileMode> for FirestoreIndexFieldMode {
     type Error = NoSingleMode;
 
     fn try_from(mode: FileMode) -> Result<Self, Self::Error> {
-        match (mode.order, mode.array_config, mode.vector_config, mode.fsq) {
+        match (
+            mode.order,
+            mode.array_config,
+            mode.search_config,
+            mode.vector_config,
+        ) {
             (Some(order), None, None, None) => Ok(Self::Order(order.into())),
             (None, Some(FileArrayConfig::Contains), None, None) => Ok(Self::ArrayContains),
-            (None, None, Some(vector), None) => Ok(Self::Vector(FirestoreVectorIndexConfig::new(
+            (None, None, Some(search), None) => search.try_into(),
+            (None, None, None, Some(vector)) => Ok(Self::Vector(FirestoreVectorIndexConfig::new(
                 vector.dimension,
             ))),
-            (None, None, None, Some(FileFieldExtras::Text)) => Ok(Self::Text),
-            (None, None, None, Some(FileFieldExtras::Geo(geo))) => Ok(Self::Geo(
+            _ => Err(NoSingleMode),
+        }
+    }
+}
+
+impl TryFrom<FileSearchConfig> for FirestoreIndexFieldMode {
+    type Error = NoSingleMode;
+
+    fn try_from(config: FileSearchConfig) -> Result<Self, Self::Error> {
+        match (config.text_spec, config.geo_spec) {
+            (Some(_), None) => Ok(Self::Text),
+            (None, Some(geo)) => Ok(Self::Geo(
                 FirestoreGeoIndexConfig::new()
-                    .with_geo_json_indexing_disabled(geo.geo_json_indexing_disabled),
+                    .with_geo_json_indexing_disabled(geo.geo_json_indexing_disabled == Some(true)),
             )),
             _ => Err(NoSingleMode),
         }
@@ -392,16 +465,16 @@ impl NoSingleMode {
     }
 }
 
-impl From<FileQueryScope> for FirestoreIndexQueryScope {
-    fn from(scope: FileQueryScope) -> Self {
+impl From<IndexScope> for FirestoreIndexQueryScope {
+    fn from(scope: IndexScope) -> Self {
         match scope {
-            FileQueryScope::Collection => Self::Collection,
-            FileQueryScope::CollectionGroup => Self::AllDescendants,
+            IndexScope::Collection => Self::Collection,
+            IndexScope::CollectionGroup => Self::AllDescendants,
         }
     }
 }
 
-impl From<FirestoreIndexQueryScope> for FileQueryScope {
+impl From<FirestoreIndexQueryScope> for IndexScope {
     fn from(scope: FirestoreIndexQueryScope) -> Self {
         match scope {
             FirestoreIndexQueryScope::Collection => Self::Collection,
@@ -475,23 +548,60 @@ impl From<&FirestoreIndexFieldMode> for FileMode {
                     flat: FlatVectorIndex {},
                 })
             }
-            FirestoreIndexFieldMode::Text => file_mode.fsq = Some(FileFieldExtras::Text),
+            FirestoreIndexFieldMode::Text => {
+                file_mode.search_config = Some(FileSearchConfig {
+                    text_spec: Some(FileTextSpec {
+                        index_specs: vec![FileTextIndexSpec {
+                            index_type: FileTextIndexType::Tokenized,
+                            match_type: FileTextMatchType::MatchGlobally,
+                        }],
+                    }),
+                    geo_spec: None,
+                })
+            }
             FirestoreIndexFieldMode::Geo(geo) => {
-                file_mode.fsq = Some(FileFieldExtras::Geo(FileGeoOptions {
-                    geo_json_indexing_disabled: geo.geo_json_indexing_disabled,
-                }))
+                file_mode.search_config = Some(FileSearchConfig {
+                    text_spec: None,
+                    geo_spec: Some(FileGeoSpec {
+                        geo_json_indexing_disabled: geo.geo_json_indexing_disabled.then_some(true),
+                    }),
+                })
             }
         }
         file_mode
     }
 }
 
+impl FileIndex {
+    /// The position the Firebase CLI gives the index in its file: by group, the collection-group
+    /// scope before the collection scope, then by fields.
+    fn order_key(&self) -> (&FirestoreCollectionId, bool, &[FileIndexField]) {
+        (
+            &self.collection_group,
+            self.query_scope == IndexScope::Collection,
+            &self.fields,
+        )
+    }
+}
+
+impl FileFieldOverride {
+    /// The position the Firebase CLI gives the override in its file: by group, the TTL fields
+    /// last, then by field path.
+    fn order_key(&self) -> (&FirestoreCollectionId, bool, &str) {
+        (
+            &self.collection_group,
+            self.ttl == Some(true),
+            &self.field_path,
+        )
+    }
+}
+
 impl From<&FirestoreListedCompositeIndex> for FileIndex {
     fn from(listed: &FirestoreListedCompositeIndex) -> Self {
         let index = &listed.index;
-        let has_extras = index.unique || index.density.is_some() || index.search_options.is_some();
+        let has_extras = index.unique || index.search_options.is_some();
         Self {
-            collection_group: listed.collection_group.to_string(),
+            collection_group: listed.collection_group.clone(),
             query_scope: index.query_scope.into(),
             fields: index
                 .fields
@@ -501,9 +611,12 @@ impl From<&FirestoreListedCompositeIndex> for FileIndex {
                     mode: (&field.mode).into(),
                 })
                 .collect(),
+            api_scope: None,
+            density: index.density.map(Into::into),
+            multikey: None,
+            unique: None,
             fsq: has_extras.then(|| FileIndexExtras {
                 unique: index.unique.then_some(true),
-                density: index.density.map(Into::into),
                 search: index.search_options.as_ref().map(Into::into),
             }),
         }
@@ -515,39 +628,40 @@ impl From<&FirestoreIndexListing> for IndexesFile {
     /// already reverting is left out, since it is on its way to having none.
     fn from(listing: &FirestoreIndexListing) -> Self {
         let mut indexes: Vec<FileIndex> = listing.indexes.iter().map(Into::into).collect();
-        indexes.sort_by(|left, right| left.collection_group.cmp(&right.collection_group));
+        indexes.sort_by(|left, right| left.order_key().cmp(&right.order_key()));
         let mut field_overrides = Vec::new();
-        let mut ttl = Vec::new();
+        let mut inherited_ttl = Vec::new();
         for field in &listing.fields {
-            if let Some(FirestoreFieldOverrideOutcome::Explicit(explicit)) = &field.index_override {
-                if !explicit.reverting {
+            let has_ttl = matches!(field.ttl, Some(FirestoreFieldTtlOutcome::Configured(_)));
+            match &field.index_override {
+                Some(FirestoreFieldOverrideOutcome::Explicit(explicit)) if !explicit.reverting => {
                     field_overrides.push(FileFieldOverride {
-                        collection_group: field.collection_group.to_string(),
+                        collection_group: field.collection_group.clone(),
                         field_path: field.field_path.clone(),
+                        ttl: Some(has_ttl),
                         indexes: explicit
                             .indexes
                             .iter()
                             .map(|index| FileOverrideIndex {
-                                query_scope: index.query_scope.into(),
                                 mode: (&index.mode).into(),
+                                query_scope: index.query_scope.into(),
                             })
                             .collect(),
                     });
                 }
-            }
-            if let Some(FirestoreFieldTtlOutcome::Configured(_)) = &field.ttl {
-                ttl.push(FileTtlField {
-                    collection_group: field.collection_group.to_string(),
+                _ if has_ttl => inherited_ttl.push(FileTtlField {
+                    collection_group: field.collection_group.clone(),
                     field_path: field.field_path.clone(),
-                });
+                }),
+                _ => {}
             }
         }
-        field_overrides.sort_by(|left, right| left.collection_group.cmp(&right.collection_group));
-        ttl.sort_by(|left, right| left.collection_group.cmp(&right.collection_group));
+        field_overrides.sort_by(|left, right| left.order_key().cmp(&right.order_key()));
+        inherited_ttl.sort_by(|left, right| left.collection_group.cmp(&right.collection_group));
         Self {
             indexes,
             field_overrides,
-            fsq: (!ttl.is_empty()).then_some(FileExtras { ttl }),
+            fsq: (!inherited_ttl.is_empty()).then_some(FileExtras { ttl: inherited_ttl }),
         }
     }
 }
@@ -555,62 +669,19 @@ impl From<&FirestoreIndexListing> for IndexesFile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::errors::IndexesFileProblem;
+    use crate::errors::{IndexesFileProblem, UnsupportedSetting};
     use firestore::{
-        FirestoreCompositeIndex, FirestoreIndexId, FirestoreIndexState, FirestoreListedField,
+        FirestoreCompositeIndex, FirestoreExplicitFieldOverride, FirestoreFieldTtlState,
+        FirestoreIndexId, FirestoreIndexState, FirestoreListedField,
     };
 
-    /// Written by hand from the schema in the Firebase documentation of `firestore.indexes.json`:
-    /// composite indexes of both scopes, an array and a vector field, and field overrides with
-    /// explicit indexes, an exemption and the all-fields wildcard.
-    const FIREBASE_INDEXES: &str = r#"{
-  "indexes": [
-    {
-      "collectionGroup": "cities",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "country", "order": "ASCENDING" },
-        { "fieldPath": "population", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "cities",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "landmarks", "arrayConfig": "CONTAINS" },
-        { "fieldPath": "population", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "landmarks",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "category", "order": "ASCENDING" },
-        { "fieldPath": "embedding", "vectorConfig": { "dimension": 768, "flat": {} } }
-      ]
-    }
-  ],
-  "fieldOverrides": [
-    {
-      "collectionGroup": "cities",
-      "fieldPath": "notes",
-      "indexes": []
-    },
-    {
-      "collectionGroup": "cities",
-      "fieldPath": "country",
-      "indexes": [
-        { "order": "ASCENDING", "queryScope": "COLLECTION" },
-        { "arrayConfig": "CONTAINS", "queryScope": "COLLECTION_GROUP" }
-      ]
-    },
-    {
-      "collectionGroup": "landmarks",
-      "fieldPath": "*",
-      "indexes": []
-    }
-  ]
-}"#;
+    /// The output of `firebase firestore:indexes` (firebase-tools 15.35.0) for a Standard edition
+    /// database: `density` on every index, a vector index, and field overrides with `ttl`.
+    const FIREBASE_STANDARD: &str = include_str!("../tests/fixtures/firebase/standard.json");
+
+    /// The output of `firebase firestore:indexes` (firebase-tools 15.35.0) for an Enterprise
+    /// edition database: text and geo `searchConfig` fields and `SPARSE_ANY` and `DENSE` density.
+    const FIREBASE_ENTERPRISE: &str = include_str!("../tests/fixtures/firebase/enterprise.json");
 
     fn group(id: &str) -> FirestoreCollectionId {
         id.parse().expect("a collection ID")
@@ -630,13 +701,14 @@ mod tests {
     fn index(
         fields: Vec<FirestoreIndexField>,
         query_scope: FirestoreIndexQueryScope,
+        density: Option<FirestoreIndexDensity>,
     ) -> FirestoreCompositeIndex {
         FirestoreCompositeIndex {
             fields,
             query_scope,
             search_options: None,
             unique: false,
-            density: None,
+            density,
         }
     }
 
@@ -647,77 +719,139 @@ mod tests {
             .expect("declarations")
     }
 
+    fn params_of_group(text: &str, id: &str) -> FirestoreIndexParams {
+        params_of(text)
+            .into_iter()
+            .find(|params| params.collection_group == group(id))
+            .expect("the group is declared")
+    }
+
+    fn written(file: &IndexesFile) -> serde_json::Value {
+        serde_json::to_value(file).expect("a JSON value")
+    }
+
     #[test]
-    fn a_firebase_file_declares_the_indexes_and_overrides_of_each_group() {
-        let params = params_of(FIREBASE_INDEXES);
+    fn what_the_firebase_cli_writes_is_written_back_unchanged() {
+        for text in [FIREBASE_STANDARD, FIREBASE_ENTERPRISE] {
+            let file: IndexesFile = text.parse().expect("an indexes file");
+
+            assert_eq!(
+                written(&file),
+                serde_json::from_str::<serde_json::Value>(text).expect("JSON")
+            );
+        }
+    }
+
+    #[test]
+    fn a_standard_file_declares_its_indexes_and_overrides() {
+        let versions = params_of_group(FIREBASE_STANDARD, "versions");
+        let vectors = params_of_group(FIREBASE_STANDARD, "test-query-vec");
+        let childs = params_of_group(FIREBASE_STANDARD, "test-childs");
 
         assert_eq!(
-            params,
+            versions.composite_indexes[1],
+            index(
+                vec![
+                    field("status", ascending()),
+                    field(
+                        "createdAt",
+                        FirestoreIndexFieldMode::Order(FirestoreQueryDirection::Descending)
+                    ),
+                    field(
+                        "__name__",
+                        FirestoreIndexFieldMode::Order(FirestoreQueryDirection::Descending)
+                    ),
+                ],
+                FirestoreIndexQueryScope::Collection,
+                Some(FirestoreIndexDensity::SparseAll),
+            )
+        );
+        assert_eq!(
+            versions.composite_indexes[0].query_scope,
+            FirestoreIndexQueryScope::AllDescendants
+        );
+        assert_eq!(
+            vectors.composite_indexes[0].fields[1],
+            field(
+                "some_vec",
+                FirestoreIndexFieldMode::Vector(FirestoreVectorIndexConfig::new(3))
+            )
+        );
+        assert_eq!(
+            childs.field_overrides,
+            vec![FirestoreFieldOverride {
+                target: FirestoreFieldOverrideTarget::Field("another_string".to_string()),
+                indexes: vec![
+                    FirestoreFieldOverrideIndex {
+                        query_scope: FirestoreIndexQueryScope::Collection,
+                        mode: ascending(),
+                    },
+                    FirestoreFieldOverrideIndex {
+                        query_scope: FirestoreIndexQueryScope::Collection,
+                        mode: FirestoreIndexFieldMode::Order(FirestoreQueryDirection::Descending),
+                    },
+                    FirestoreFieldOverrideIndex {
+                        query_scope: FirestoreIndexQueryScope::Collection,
+                        mode: FirestoreIndexFieldMode::ArrayContains,
+                    },
+                    FirestoreFieldOverrideIndex {
+                        query_scope: FirestoreIndexQueryScope::AllDescendants,
+                        mode: ascending(),
+                    },
+                ],
+            }]
+        );
+        assert_eq!(childs.ttl_fields, Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_enterprise_file_declares_its_search_fields_and_densities() {
+        let restaurants = params_of_group(FIREBASE_ENTERPRISE, "pipeline-restaurants");
+        let books = params_of_group(FIREBASE_ENTERPRISE, "pipeline-books");
+
+        assert_eq!(
+            restaurants.composite_indexes,
             vec![
-                FirestoreIndexParams::new(group("cities"))
-                    .with_composite_indexes(vec![
-                        index(
-                            vec![
-                                field("country", ascending()),
-                                field(
-                                    "population",
-                                    FirestoreIndexFieldMode::Order(
-                                        FirestoreQueryDirection::Descending
-                                    )
-                                ),
-                            ],
-                            FirestoreIndexQueryScope::Collection
-                        ),
-                        index(
-                            vec![
-                                field("landmarks", FirestoreIndexFieldMode::ArrayContains),
-                                field("population", ascending()),
-                            ],
-                            FirestoreIndexQueryScope::AllDescendants
-                        ),
-                    ])
-                    .with_field_overrides(vec![
-                        FirestoreFieldOverride {
-                            target: FirestoreFieldOverrideTarget::Field("notes".to_string()),
-                            indexes: Vec::new(),
-                        },
-                        FirestoreFieldOverride {
-                            target: FirestoreFieldOverrideTarget::Field("country".to_string()),
-                            indexes: vec![
-                                FirestoreFieldOverrideIndex {
-                                    query_scope: FirestoreIndexQueryScope::Collection,
-                                    mode: ascending(),
-                                },
-                                FirestoreFieldOverrideIndex {
-                                    query_scope: FirestoreIndexQueryScope::AllDescendants,
-                                    mode: FirestoreIndexFieldMode::ArrayContains,
-                                },
-                            ],
-                        },
-                    ]),
-                FirestoreIndexParams::new(group("landmarks"))
-                    .with_composite_indexes(vec![index(
-                        vec![
-                            field("category", ascending()),
-                            field(
-                                "embedding",
-                                FirestoreIndexFieldMode::Vector(FirestoreVectorIndexConfig::new(
-                                    768
-                                ))
-                            ),
-                        ],
-                        FirestoreIndexQueryScope::Collection
-                    )])
-                    .with_field_overrides(vec![FirestoreFieldOverride {
-                        target: FirestoreFieldOverrideTarget::AllFields,
-                        indexes: Vec::new(),
-                    }]),
+                index(
+                    vec![field(
+                        "location",
+                        FirestoreIndexFieldMode::Geo(FirestoreGeoIndexConfig::new())
+                    )],
+                    FirestoreIndexQueryScope::Collection,
+                    Some(FirestoreIndexDensity::SparseAny),
+                ),
+                index(
+                    vec![
+                        field("menu", FirestoreIndexFieldMode::Text),
+                        field("description", FirestoreIndexFieldMode::Text),
+                    ],
+                    FirestoreIndexQueryScope::Collection,
+                    Some(FirestoreIndexDensity::SparseAny),
+                ),
             ]
+        );
+        assert_eq!(
+            books.composite_indexes[1].density,
+            Some(FirestoreIndexDensity::Dense)
         );
     }
 
     #[test]
-    fn enterprise_settings_and_ttl_fields_live_under_fsq_keys() {
+    fn a_field_override_with_ttl_declares_the_ttl_field() {
+        let params = params_of(
+            r#"{"indexes": [], "fieldOverrides": [
+                {"collectionGroup": "sessions", "fieldPath": "expires_at", "ttl": true,
+                 "indexes": [{"order": "ASCENDING", "queryScope": "COLLECTION"}]},
+                {"collectionGroup": "sessions", "fieldPath": "seen_at", "ttl": false,
+                 "indexes": []}]}"#,
+        );
+
+        assert_eq!(params[0].ttl_fields, ["expires_at"]);
+        assert_eq!(params[0].field_overrides.len(), 2);
+    }
+
+    #[test]
+    fn what_firebase_cannot_express_lives_under_fsq_keys() {
         let params = params_of(
             r#"{
   "indexes": [
@@ -725,12 +859,11 @@ mod tests {
       "collectionGroup": "articles",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "body", "fsq": { "mode": "TEXT" } },
-        { "fieldPath": "place", "fsq": { "mode": "GEO", "geoJsonIndexingDisabled": true } }
+        { "fieldPath": "body", "searchConfig": { "geoSpec": { "geoJsonIndexingDisabled": true } } }
       ],
+      "density": "SPARSE_ANY",
       "fsq": {
         "unique": true,
-        "density": "SPARSE_ANY",
         "search": { "textLanguage": "en", "textLanguageOverrideFieldPath": "lang" }
       }
     }
@@ -745,16 +878,13 @@ mod tests {
             vec![
                 FirestoreIndexParams::new(group("articles")).with_composite_indexes(vec![
                     FirestoreCompositeIndex {
-                        fields: vec![
-                            field("body", FirestoreIndexFieldMode::Text),
-                            field(
-                                "place",
-                                FirestoreIndexFieldMode::Geo(
-                                    FirestoreGeoIndexConfig::new()
-                                        .with_geo_json_indexing_disabled(true)
-                                )
-                            ),
-                        ],
+                        fields: vec![field(
+                            "body",
+                            FirestoreIndexFieldMode::Geo(
+                                FirestoreGeoIndexConfig::new()
+                                    .with_geo_json_indexing_disabled(true)
+                            )
+                        )],
                         query_scope: FirestoreIndexQueryScope::Collection,
                         search_options: Some(
                             FirestoreSearchIndexOptions::new()
@@ -769,6 +899,53 @@ mod tests {
                     .with_ttl_fields(vec!["expires_at".to_string()]),
             ]
         );
+    }
+
+    #[test]
+    fn unique_is_read_from_the_firebase_key_too() {
+        let params = params_of(
+            r#"{"indexes": [{"collectionGroup": "cities", "queryScope": "COLLECTION",
+            "fields": [{"fieldPath": "name", "order": "ASCENDING"}], "unique": true}]}"#,
+        );
+
+        assert!(params[0].composite_indexes[0].unique);
+    }
+
+    #[test]
+    fn settings_the_crate_cannot_declare_are_refused() {
+        for (setting, text) in [
+            ("apiScope", r#""apiScope": "DATASTORE_MODE_API""#),
+            ("multikey", r#""multikey": true"#),
+        ] {
+            let problem = format!(
+                r#"{{"indexes": [{{"collectionGroup": "cities", "queryScope": "COLLECTION",
+                "fields": [{{"fieldPath": "name", "order": "ASCENDING"}}], {text}}}]}}"#
+            )
+            .parse::<IndexesFile>()
+            .expect("valid JSON of the right shape")
+            .into_params()
+            .expect_err("an unsupported setting");
+
+            assert!(
+                matches!(
+                    problem,
+                    IndexesFileProblem::UnsupportedSetting(UnsupportedSetting { collection_group, setting: refused })
+                        if collection_group == group("cities") && refused.starts_with(setting)
+                ),
+                "{setting}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_default_api_scope_and_multikey_are_read() {
+        let params = params_of(
+            r#"{"indexes": [{"collectionGroup": "cities", "queryScope": "COLLECTION",
+            "fields": [{"fieldPath": "name", "order": "ASCENDING"}],
+            "apiScope": "ANY_API", "multikey": false}]}"#,
+        );
+
+        assert_eq!(params[0].composite_indexes.len(), 1);
     }
 
     #[test]
@@ -788,117 +965,182 @@ mod tests {
     #[test]
     fn a_key_the_file_format_does_not_define_is_refused_with_its_path() {
         let problem = r#"{"indexes": [{"collectionGroup": "cities", "queryScope": "COLLECTION",
-            "density": "SPARSE_ALL", "fields": []}],
+            "sharded": true, "fields": []}],
             "fieldOverrides": [{"collectionGroup": "cities", "fieldPath": "expires_at",
-            "ttl": true, "indexes": []}]}"#
+            "retention": 3, "indexes": []}]}"#
             .parse::<IndexesFile>()
             .expect_err("unread keys");
 
         assert!(
-            matches!(problem, IndexesFileProblem::UnreadKeys(UnreadKeys { keys }) if keys == ["indexes[0].density", "fieldOverrides[0].ttl"])
+            matches!(problem, IndexesFileProblem::UnreadKeys(UnreadKeys { keys }) if keys == ["indexes[0].sharded", "fieldOverrides[0].retention"])
         );
     }
 
     #[test]
-    fn explicit_defaults_are_not_unread_keys() {
+    fn explicit_defaults_and_nulls_are_not_unread_keys() {
         let file: IndexesFile = r#"{"indexes": [{"collectionGroup": "cities",
             "queryScope": "COLLECTION", "fields": [{"fieldPath": "name", "order": "ASCENDING"}],
-            "fsq": {"unique": false}}], "fieldOverrides": []}"#
+            "density": null, "fsq": {"unique": false}}], "fieldOverrides": []}"#
             .parse()
             .expect("an indexes file");
 
         assert_eq!(file.indexes.len(), 1);
     }
 
-    #[test]
-    fn a_listing_exports_to_a_file_that_reads_back_as_the_same_declarations() {
-        let listed_index =
-            |id: &str, composite: FirestoreCompositeIndex| FirestoreListedCompositeIndex {
-                name: format!("projects/p/databases/d/collectionGroups/orders/indexes/{id}"),
-                collection_group: group("orders"),
-                id: id.parse::<FirestoreIndexId>().expect("an index ID"),
-                state: FirestoreIndexState::Ready,
-                index: composite,
-            };
+    fn listed_index(id: &str, composite: FirestoreCompositeIndex) -> FirestoreListedCompositeIndex {
+        FirestoreListedCompositeIndex {
+            name: format!("projects/p/databases/d/collectionGroups/orders/indexes/{id}"),
+            collection_group: group("orders"),
+            id: id.parse::<FirestoreIndexId>().expect("an index ID"),
+            state: FirestoreIndexState::Ready,
+            index: composite,
+        }
+    }
+
+    fn listed_field(
+        path: &str,
+        index_override: Option<FirestoreFieldOverrideOutcome>,
+        ttl: bool,
+    ) -> FirestoreListedField {
+        FirestoreListedField {
+            name: format!("projects/p/databases/d/collectionGroups/orders/fields/{path}"),
+            collection_group: group("orders"),
+            field_path: path.to_string(),
+            index_override,
+            ttl: ttl.then_some(FirestoreFieldTtlOutcome::Configured(
+                FirestoreFieldTtlState::Active,
+            )),
+        }
+    }
+
+    fn exempt() -> Option<FirestoreFieldOverrideOutcome> {
+        Some(FirestoreFieldOverrideOutcome::Explicit(
+            FirestoreExplicitFieldOverride {
+                indexes: Vec::new(),
+                reverting: false,
+            },
+        ))
+    }
+
+    fn orders_listing() -> FirestoreIndexListing {
         let search = FirestoreCompositeIndex {
-            fields: vec![field("body", FirestoreIndexFieldMode::Text)],
+            fields: vec![
+                field("body", FirestoreIndexFieldMode::Text),
+                field(
+                    "place",
+                    FirestoreIndexFieldMode::Geo(
+                        FirestoreGeoIndexConfig::new().with_geo_json_indexing_disabled(true),
+                    ),
+                ),
+            ],
             query_scope: FirestoreIndexQueryScope::Collection,
             search_options: Some(
                 FirestoreSearchIndexOptions::new().with_text_language("en".to_string()),
             ),
-            unique: false,
+            unique: true,
             density: Some(FirestoreIndexDensity::SparseAny),
         };
-        let listing = FirestoreIndexListing {
+        FirestoreIndexListing {
             indexes: vec![
                 listed_index(
-                    "CICAgJim14AK",
+                    "CICAgOjXh4EK",
                     index(
-                        vec![
-                            field("customer_id", ascending()),
-                            field("tags", FirestoreIndexFieldMode::ArrayContains),
-                        ],
-                        FirestoreIndexQueryScope::AllDescendants,
+                        vec![field("customer_id", ascending())],
+                        FirestoreIndexQueryScope::Collection,
+                        Some(FirestoreIndexDensity::SparseAll),
                     ),
                 ),
-                listed_index("CICAgOjXh4EK", search),
-            ],
-            fields: vec![
-                FirestoreListedField {
-                    name: "projects/p/databases/d/collectionGroups/orders/fields/notes".to_string(),
-                    collection_group: group("orders"),
-                    field_path: "notes".to_string(),
-                    index_override: Some(FirestoreFieldOverrideOutcome::Explicit(
-                        firestore::FirestoreExplicitFieldOverride {
-                            indexes: Vec::new(),
-                            reverting: false,
-                        },
-                    )),
-                    ttl: None,
-                },
-                FirestoreListedField {
-                    name: "projects/p/databases/d/collectionGroups/orders/fields/placed_at"
-                        .to_string(),
-                    collection_group: group("orders"),
-                    field_path: "placed_at".to_string(),
-                    index_override: Some(FirestoreFieldOverrideOutcome::Inherited),
-                    ttl: Some(FirestoreFieldTtlOutcome::Configured(
-                        firestore::FirestoreFieldTtlState::Active,
-                    )),
-                },
-            ],
-            unrecognised: Vec::new(),
-        };
-
-        let exported = IndexesFile::from(&listing).to_string();
-
-        assert_eq!(
-            params_of(&exported),
-            vec![FirestoreIndexParams::new(group("orders"))
-                .with_composite_indexes(vec![
+                listed_index("CICAgJim14AK", search),
+                listed_index(
+                    "CICAgNiv44AK",
                     index(
                         vec![
                             field("customer_id", ascending()),
                             field("tags", FirestoreIndexFieldMode::ArrayContains),
                         ],
                         FirestoreIndexQueryScope::AllDescendants,
+                        Some(FirestoreIndexDensity::SparseAll),
                     ),
-                    FirestoreCompositeIndex {
-                        fields: vec![field("body", FirestoreIndexFieldMode::Text)],
-                        query_scope: FirestoreIndexQueryScope::Collection,
-                        search_options: Some(
-                            FirestoreSearchIndexOptions::new().with_text_language("en".to_string())
-                        ),
-                        unique: false,
-                        density: Some(FirestoreIndexDensity::SparseAny),
+                ),
+            ],
+            fields: vec![
+                listed_field("expires_at", exempt(), true),
+                listed_field("notes", exempt(), false),
+                listed_field(
+                    "placed_at",
+                    Some(FirestoreFieldOverrideOutcome::Inherited),
+                    true,
+                ),
+            ],
+            unrecognised: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_listing_exports_as_firebase_writes_it() {
+        let exported = written(&IndexesFile::from(&orders_listing()));
+
+        assert_eq!(
+            exported,
+            serde_json::json!({
+                "indexes": [
+                    {
+                        "collectionGroup": "orders",
+                        "queryScope": "COLLECTION_GROUP",
+                        "fields": [
+                            { "fieldPath": "customer_id", "order": "ASCENDING" },
+                            { "fieldPath": "tags", "arrayConfig": "CONTAINS" }
+                        ],
+                        "density": "SPARSE_ALL"
                     },
-                ])
-                .with_field_overrides(vec![FirestoreFieldOverride {
-                    target: FirestoreFieldOverrideTarget::Field("notes".to_string()),
-                    indexes: Vec::new(),
-                }])
-                .with_ttl_fields(vec!["placed_at".to_string()])]
+                    {
+                        "collectionGroup": "orders",
+                        "queryScope": "COLLECTION",
+                        "fields": [
+                            { "fieldPath": "body", "searchConfig": { "textSpec": { "indexSpecs": [
+                                { "indexType": "TOKENIZED", "matchType": "MATCH_GLOBALLY" }
+                            ] } } },
+                            { "fieldPath": "place", "searchConfig": { "geoSpec": {
+                                "geoJsonIndexingDisabled": true
+                            } } }
+                        ],
+                        "density": "SPARSE_ANY",
+                        "fsq": { "unique": true, "search": { "textLanguage": "en" } }
+                    },
+                    {
+                        "collectionGroup": "orders",
+                        "queryScope": "COLLECTION",
+                        "fields": [{ "fieldPath": "customer_id", "order": "ASCENDING" }],
+                        "density": "SPARSE_ALL"
+                    }
+                ],
+                "fieldOverrides": [
+                    { "collectionGroup": "orders", "fieldPath": "notes", "ttl": false, "indexes": [] },
+                    { "collectionGroup": "orders", "fieldPath": "expires_at", "ttl": true, "indexes": [] }
+                ],
+                "fsq": { "ttl": [{ "collectionGroup": "orders", "fieldPath": "placed_at" }] }
+            })
         );
+    }
+
+    #[test]
+    fn an_exported_file_reads_back_as_the_declarations_it_came_from() {
+        let listing = orders_listing();
+        let exported =
+            serde_json::to_string_pretty(&IndexesFile::from(&listing)).expect("a file serialises");
+
+        let params = params_of(&exported);
+
+        assert_eq!(params.len(), 1);
+        assert_eq!(
+            params[0].composite_indexes,
+            vec![
+                listing.indexes[2].index.clone(),
+                listing.indexes[1].index.clone(),
+                listing.indexes[0].index.clone(),
+            ]
+        );
+        assert_eq!(params[0].ttl_fields, ["expires_at", "placed_at"]);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use firestore::errors::FirestoreError;
 use firestore::gcloud_sdk::tonic::Code;
+use firestore::FirestoreCollectionId;
 use std::fmt::{Display, Formatter};
 use std::num::ParseIntError;
 use std::path::{Path, PathBuf};
@@ -166,15 +167,23 @@ pub enum IndexesFileProblem {
     #[error(transparent)]
     Json(#[from] serde_json::Error),
     #[error(transparent)]
-    CollectionGroup(#[from] FirestoreError),
-    #[error(transparent)]
     FieldMode(InvalidFieldMode),
     #[error(transparent)]
     UnreadKeys(UnreadKeys),
+    #[error(transparent)]
+    UnsupportedSetting(UnsupportedSetting),
+}
+
+/// A Firebase index setting that the firestore crate has no model for.
+#[derive(Debug, Error)]
+#[error("the index of `{collection_group}` sets {setting}, which fsq cannot declare")]
+pub struct UnsupportedSetting {
+    pub collection_group: FirestoreCollectionId,
+    pub setting: &'static str,
 }
 
 #[derive(Debug, Error)]
-#[error("the field `{field_path}` must set exactly one of order, arrayConfig, vectorConfig and fsq.mode")]
+#[error("the field `{field_path}` must set exactly one of order, arrayConfig, searchConfig and vectorConfig")]
 pub struct InvalidFieldMode {
     pub field_path: String,
 }

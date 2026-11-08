@@ -26,7 +26,6 @@ impl Session {
         }
     }
 
-    /// Lists the indexes and field overrides of `group`, or of every collection group.
     async fn list_live_indexes(
         &self,
         group: Option<&FirestoreCollectionId>,
@@ -39,7 +38,6 @@ impl Session {
         Ok(interruptible(list.get()).await??)
     }
 
-    /// The fluent statement that declares `params` on its collection group.
     fn declared_indexes(
         &self,
         params: FirestoreIndexParams,
@@ -189,14 +187,13 @@ impl Session {
         self.show_indexes(&listing, started)
     }
 
-    /// Writes the live state as an indexes file, to `output` or to stdout.
     async fn index_export(&mut self, output: Option<&Path>) -> FsqResult<()> {
         let listing = self.list_live_indexes(None).await?;
         for line in IndexesFile::unexported(&listing) {
             self.output.notice(&format!("not exported: {line}"))?;
         }
         let file = IndexesFile::from(&listing);
-        let text = format!("{file}\n");
+        let text = format!("{}\n", serde_json::to_string_pretty(&file)?);
         match output {
             Some(path) => {
                 std::fs::write(path, &text)

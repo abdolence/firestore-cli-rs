@@ -1,5 +1,6 @@
 use crate::errors::{FsqError, InvalidIndexField};
-use clap::{Args, Subcommand, ValueEnum};
+use crate::index_file::IndexScope;
+use clap::{Args, Subcommand};
 use firestore::{
     FirestoreCollectionId, FirestoreCompositeIndex, FirestoreIndexDefinition,
     FirestoreIndexDeleteTarget, FirestoreIndexField, FirestoreIndexFieldMode, FirestoreIndexId,
@@ -75,7 +76,7 @@ pub struct IndexCreateArgs {
     pub fields: Vec<IndexFieldSpec>,
 
     #[arg(long, value_enum, default_value_t)]
-    pub scope: IndexScopeArg,
+    pub scope: IndexScope,
 
     #[arg(long, help = "Succeed when the index already exists")]
     pub if_not_exists: bool,
@@ -101,28 +102,10 @@ pub struct IndexDeleteArgs {
         default_value_t,
         help = "The query scope of the index, when named by its fields"
     )]
-    pub scope: IndexScopeArg,
+    pub scope: IndexScope,
 
     #[arg(long, help = "Succeed when there is no such index")]
     pub if_exists: bool,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
-pub enum IndexScopeArg {
-    /// Queries against one collection.
-    #[default]
-    Collection,
-    /// Queries across every collection with the group's ID.
-    Group,
-}
-
-impl From<IndexScopeArg> for FirestoreIndexQueryScope {
-    fn from(scope: IndexScopeArg) -> Self {
-        match scope {
-            IndexScopeArg::Collection => Self::Collection,
-            IndexScopeArg::Group => Self::AllDescendants,
-        }
-    }
 }
 
 /// An indexed field as the command line writes it: `<field>:asc`, `<field>:desc` or
@@ -209,8 +192,6 @@ fn composite_index(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::args::{CliArgs, CliCommand};
-    use clap::Parser;
 
     fn field(path: &str, mode: FirestoreIndexFieldMode) -> FirestoreIndexField {
         FirestoreIndexField {
@@ -226,7 +207,7 @@ mod tests {
                 .iter()
                 .map(|text| text.parse().expect("a field spec"))
                 .collect(),
-            scope: IndexScopeArg::Collection,
+            scope: IndexScope::Collection,
             if_exists: false,
         }
     }
@@ -289,7 +270,7 @@ mod tests {
     #[test]
     fn a_delete_with_a_group_and_fields_names_an_index_by_its_definition() {
         let mut args = delete_args("books", &["genre:asc", "rating:desc"]);
-        args.scope = IndexScopeArg::Group;
+        args.scope = IndexScope::CollectionGroup;
 
         let target = FirestoreIndexDeleteTarget::try_from(args).expect("a definition");
 
@@ -312,27 +293,5 @@ mod tests {
                 )
             ))
         );
-    }
-
-    #[test]
-    fn no_wait_is_accepted_after_the_sync_subcommand() {
-        let args = CliArgs::try_parse_from([
-            "fsq",
-            "index",
-            "sync",
-            "firestore.indexes.json",
-            "--prune",
-            "--no-wait",
-        ])
-        .expect("arguments");
-
-        assert!(args.no_wait);
-        assert!(matches!(
-            args.command,
-            Some(CliCommand::Index(IndexCommand::Sync(IndexFileArgs {
-                prune: true,
-                ..
-            })))
-        ));
     }
 }

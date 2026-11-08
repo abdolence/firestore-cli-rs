@@ -1,0 +1,80 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "pipeline-books",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "embedding",
+          "vectorConfig": {
+            "dimension": 3,
+            "flat": {}
+          }
+        }
+      ],
+      "density": "DENSE"
+    },
+    {
+      "collectionGroup": "pipeline-books",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "genre",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "rating",
+          "order": "DESCENDING"
+        }
+      ],
+      "density": "DENSE"
+    },
+    {
+      "collectionGroup": "pipeline-restaurants",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "location",
+          "searchConfig": {
+            "geoSpec": {}
+          }
+        }
+      ],
+      "density": "SPARSE_ANY"
+    },
+    {
+      "collectionGroup": "pipeline-restaurants",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "menu",
+          "searchConfig": {
+            "textSpec": {
+              "indexSpecs": [
+                {
+                  "indexType": "TOKENIZED",
+                  "matchType": "MATCH_GLOBALLY"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "fieldPath": "description",
+          "searchConfig": {
+            "textSpec": {
+              "indexSpecs": [
+                {
+                  "indexType": "TOKENIZED",
+                  "matchType": "MATCH_GLOBALLY"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "density": "SPARSE_ANY"
+    }
+  ],
+  "fieldOverrides": []
+}
