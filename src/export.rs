@@ -1,6 +1,6 @@
 use crate::connection::Connection;
 use crate::describe::CollectionPath;
-use crate::errors::{FsqError, FsqResult, InvalidCollectionPath, OpenFile};
+use crate::errors::{FileAccess, FsqError, FsqResult, InvalidCollectionPath};
 use crate::render::{counted, Output};
 use clap::ArgGroup;
 use firestore::{
@@ -80,13 +80,8 @@ pub async fn run(connection: &Connection, args: &ExportArgs) -> FsqResult<()> {
     };
     let exported = match &args.output {
         Some(path) => {
-            let file = File::create(path).map_err(|source| {
-                FsqError::OpenFile(OpenFile {
-                    path: path.clone(),
-                    purpose: "write",
-                    source,
-                })
-            })?;
+            let file = File::create(path)
+                .map_err(|source| FsqError::file_access(path, FileAccess::Write, source))?;
             export.write(source, BufWriter::new(file)).await
         }
         None => {

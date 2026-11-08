@@ -1,7 +1,8 @@
 use firestore::errors::FirestoreError;
 use firestore::gcloud_sdk::tonic::Code;
+use std::fmt::{Display, Formatter};
 use std::num::ParseIntError;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 pub type FsqResult<T> = Result<T, FsqError>;
@@ -23,9 +24,7 @@ pub enum FsqError {
     #[error(transparent)]
     MissingMetaArgument(MissingMetaArgument),
     #[error(transparent)]
-    ReadScript(ReadScript),
-    #[error(transparent)]
-    OpenFile(OpenFile),
+    FileAccessFailed(FileAccessFailed),
     #[error("export needs a collection or --sql")]
     ExportWithoutSource,
     #[error("export --sql runs a SELECT, and this statement is not one")]
@@ -36,10 +35,6 @@ pub enum FsqError {
     ImportWrite(ImportWrite),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    #[error(transparent)]
-    ReadIndexesFile(ReadIndexesFile),
-    #[error(transparent)]
-    WriteIndexesFile(WriteIndexesFile),
     #[error(transparent)]
     InvalidIndexesFile(InvalidIndexesFile),
     #[error(transparent)]
@@ -93,29 +88,28 @@ pub struct MissingMetaArgument {
 }
 
 #[derive(Debug, Error)]
-#[error("cannot read {}: {source}", path.display())]
-pub struct ReadScript {
+#[error("cannot {access} {}: {source}", path.display())]
+pub struct FileAccessFailed {
     pub path: PathBuf,
+    pub access: FileAccess,
     #[source]
     pub source: std::io::Error,
 }
 
-#[derive(Debug, Error)]
-#[error("cannot {purpose} {}: {source}", path.display())]
-pub struct OpenFile {
-    pub path: PathBuf,
-    /// The verb that names what fsq wanted the file for: `read` or `write`.
-    pub purpose: &'static str,
-    #[source]
-    pub source: std::io::Error,
+/// What fsq wanted a file for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileAccess {
+    Read,
+    Write,
 }
 
-#[derive(Debug, Error)]
-#[error("cannot read {}: {source}", path.display())]
-pub struct ReadIndexesFile {
-    pub path: PathBuf,
-    #[source]
-    pub source: std::io::Error,
+impl Display for FileAccess {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        })
+    }
 }
 
 /// A line of an import file that is not a document.
@@ -154,14 +148,6 @@ pub struct ImportWrite {
     pub document: String,
     pub code: Code,
     pub message: String,
-}
-
-#[derive(Debug, Error)]
-#[error("cannot write {}: {source}", path.display())]
-pub struct WriteIndexesFile {
-    pub path: PathBuf,
-    #[source]
-    pub source: std::io::Error,
 }
 
 #[derive(Debug, Error)]
@@ -220,6 +206,14 @@ pub struct InputsFailed {
 }
 
 impl FsqError {
+    pub fn file_access(path: &Path, access: FileAccess, source: std::io::Error) -> Self {
+        Self::FileAccessFailed(FileAccessFailed {
+            path: path.to_path_buf(),
+            access,
+            source,
+        })
+    }
+
     pub fn invalid_meta_argument(
         command: &'static str,
         argument: &str,

@@ -1,8 +1,6 @@
 use super::statement::INDEX_WAIT_TIMEOUT;
 use super::{interruptible, Session};
-use crate::errors::{
-    FsqError, FsqResult, IndexesFileProblem, InvalidIndexesFile, ReadIndexesFile, WriteIndexesFile,
-};
+use crate::errors::{FileAccess, FsqError, FsqResult, IndexesFileProblem, InvalidIndexesFile};
 use crate::index_command::{IndexCommand, IndexCreateArgs, IndexDeleteArgs, IndexFileArgs};
 use crate::index_file::IndexesFile;
 use crate::meta::Switch;
@@ -70,12 +68,8 @@ impl Session {
         &self,
         args: &IndexFileArgs,
     ) -> FsqResult<Vec<FirestoreIndexParams>> {
-        let text = std::fs::read_to_string(&args.file).map_err(|source| {
-            FsqError::ReadIndexesFile(ReadIndexesFile {
-                path: args.file.clone(),
-                source,
-            })
-        })?;
+        let text = std::fs::read_to_string(&args.file)
+            .map_err(|source| FsqError::file_access(&args.file, FileAccess::Read, source))?;
         let invalid = |source: IndexesFileProblem| {
             FsqError::InvalidIndexesFile(InvalidIndexesFile {
                 path: args.file.clone(),
@@ -205,12 +199,8 @@ impl Session {
         let text = format!("{file}\n");
         match output {
             Some(path) => {
-                std::fs::write(path, &text).map_err(|source| {
-                    FsqError::WriteIndexesFile(WriteIndexesFile {
-                        path: path.to_path_buf(),
-                        source,
-                    })
-                })?;
+                std::fs::write(path, &text)
+                    .map_err(|source| FsqError::file_access(path, FileAccess::Write, source))?;
                 self.output.notice(&format!(
                     "Wrote {} and {} to {}.",
                     counted(file.indexes.len(), "index", "indexes"),

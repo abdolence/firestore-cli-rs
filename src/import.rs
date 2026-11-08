@@ -1,7 +1,7 @@
 use crate::connection::Connection;
 use crate::errors::{
-    FsqError, FsqResult, ImportLine, ImportLineCause, ImportWrite, InputsFailed, InvalidDocument,
-    OpenFile,
+    FileAccess, FsqError, FsqResult, ImportLine, ImportLineCause, ImportWrite, InputsFailed,
+    InvalidDocument,
 };
 use crate::render::{counted, Output};
 use clap::ValueEnum;
@@ -115,14 +115,9 @@ pub async fn run(connection: &Connection, args: &ImportArgs) -> FsqResult<()> {
     let (input, size): (Box<dyn BufRead>, Option<u64>) = match &args.input {
         ImportInput::Stdin => (Box::new(std::io::stdin().lock()), None),
         ImportInput::File(path) => {
-            let file = File::open(path).map_err(|source| {
-                FsqError::OpenFile(OpenFile {
-                    path: path.clone(),
-                    purpose: "read",
-                    source,
-                })
-            })?;
-            let size = file.metadata()?.len();
+            let access = |source| FsqError::file_access(path, FileAccess::Read, source);
+            let file = File::open(path).map_err(access)?;
+            let size = file.metadata().map_err(access)?.len();
             (Box::new(BufReader::new(file)), Some(size))
         }
     };

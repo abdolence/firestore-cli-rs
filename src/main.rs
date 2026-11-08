@@ -16,7 +16,7 @@ mod tokens;
 use args::{CliArgs, CliCommand, SqlArgs};
 use clap::Parser;
 use connection::Connection;
-use errors::{FsqError, FsqResult, ReadScript};
+use errors::{FileAccess, FsqError, FsqResult};
 use meta::Switch;
 use render::{ExpandedMode, Output};
 use session::{Interaction, Session, Settings};
@@ -66,7 +66,7 @@ async fn run(args: CliArgs) -> FsqResult<()> {
                 (Some(statements), _) => Some(statements),
                 (None, Some(path)) => Some(
                     std::fs::read_to_string(&path)
-                        .map_err(|source| FsqError::ReadScript(ReadScript { path, source }))?,
+                        .map_err(|source| FsqError::file_access(&path, FileAccess::Read, source))?,
                 ),
                 (None, None) => None,
             };
