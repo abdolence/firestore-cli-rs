@@ -3,7 +3,7 @@
 #   irm https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.ps1 | iex
 #
 # FSQ_INSTALL_DIR  target directory, default %LOCALAPPDATA%\Programs\fsq
-# FSQ_VERSION      release tag such as v0.1.0, default is the latest release
+# FSQ_VERSION      release tag such as v0.1.1, default is the latest release
 #
 # See the "Installation" section of the README for details.
 #
@@ -62,7 +62,7 @@
         $releaseUrl = "$apiUrl/latest"
     }
     else {
-        if ($version -notmatch '^v[0-9][A-Za-z0-9._+-]*$') { throw "FSQ_VERSION must be a release tag such as v0.1.0, got '$version'." }
+        if ($version -notmatch '^v[0-9][A-Za-z0-9._+-]*$') { throw "FSQ_VERSION must be a release tag such as v0.1.1, got '$version'." }
         $releaseUrl = "$apiUrl/tags/$version"
     }
 

@@ -49,7 +49,7 @@ on musl systems such as Alpine use [Cargo](#cargo).
 
 * `FSQ_INSTALL_DIR`: the install directory. Default is `~/.local/bin` on macOS, Linux and FreeBSD
   and `%LOCALAPPDATA%\Programs\fsq` on Windows;
-* `FSQ_VERSION`: the release tag to install, such as `v0.1.0`. Default is the latest release.
+* `FSQ_VERSION`: the release tag to install, such as `v0.1.1`. Default is the latest release.
 
 The Windows script adds the install directory to your user `PATH`; the shell script prints the
 `export` line to add if the directory is not on your `PATH`.
@@ -57,13 +57,13 @@ The Windows script adds the install directory to your user `PATH`; the shell scr
 To install a specific version on macOS, Linux and FreeBSD:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.sh | env FSQ_VERSION=v0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.sh | env FSQ_VERSION=v0.1.1 sh
 ```
 
 On Windows:
 
 ```powershell
-& { try { $env:FSQ_VERSION = 'v0.1.0'; irm https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.ps1 | iex } finally { Remove-Item Env:FSQ_VERSION } }
+& { try { $env:FSQ_VERSION = 'v0.1.1'; irm https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.ps1 | iex } finally { Remove-Item Env:FSQ_VERSION } }
 ```
 
 To install into a custom directory on macOS, Linux and FreeBSD:

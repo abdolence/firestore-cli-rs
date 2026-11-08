@@ -4,7 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.sh | sh
 #
 # FSQ_INSTALL_DIR  target directory, default $HOME/.local/bin
-# FSQ_VERSION      release tag such as v0.1.0, default is the latest release
+# FSQ_VERSION      release tag such as v0.1.1, default is the latest release
 #
 # See the "Installation" section of the README for details.
 #
@@ -145,7 +145,7 @@ On Windows use install.ps1. Other platforms: build from source with 'cargo insta
     version="${FSQ_VERSION:-}"
     case "$version" in
         "") release_url="$API_URL/latest" ;;
-        *[!A-Za-z0-9._+-]* | [!v]* | v | v[!0-9]*) die "FSQ_VERSION must be a release tag such as v0.1.0, got '$version'" ;;
+        *[!A-Za-z0-9._+-]* | [!v]* | v | v[!0-9]*) die "FSQ_VERSION must be a release tag such as v0.1.1, got '$version'" ;;
         *) release_url="$API_URL/tags/$version" ;;
     esac
 
