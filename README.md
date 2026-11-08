@@ -6,6 +6,8 @@ A command line client for Google Firestore: a SQL REPL with tables, query plans 
 and a scripting mode with JSON output. It is built on the [firestore](https://github.com/abdolence/firestore-rs)
 crate, which translates SQL into Firestore pipelines.
 
+![fsq-demo](media/fsq-demo.webp)
+
 ## Features
 
 * **SQL REPL:** highlighting, completion of collections and fields, statements across several lines and a history;
