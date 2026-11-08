@@ -120,7 +120,7 @@ async fn run(args: CliArgs) -> FsqResult<()> {
                 None => options.offline(&codegen_args.sql)?,
             };
             let output = Output::detect();
-            output.print(&codegen::highlighted(&snippet, &output.theme()))
+            output.print(&snippet)
         }
         CliCommand::Index(command) => {
             let connection = Connection::open(args.project, args.database).await?;

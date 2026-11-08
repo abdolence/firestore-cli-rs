@@ -1,14 +1,10 @@
 use crate::describe::SampleSize;
 use crate::errors::{FsqError, FsqResult, InvalidParameter, ParameterProblem};
-use crate::render::Theme;
 use firestore::{FirestoreDb, FirestoreSqlOptions, FirestoreSqlParameters, FirestoreSqlStatement};
 use std::str::FromStr;
 
 /// The rows `--sample` fetches to type the row struct when it is not given.
 const DEFAULT_SAMPLE_ROWS: u32 = 100;
-
-/// Words of the generated Rust that are styled on a terminal.
-const RUST_KEYWORDS: &[&str] = &["use", "struct", "async", "fn", "await"];
 
 #[derive(Debug, Clone, PartialEq, clap::Args)]
 pub struct CodegenArgs {
@@ -198,29 +194,6 @@ impl FromStr for GenerateCommand {
     }
 }
 
-/// `snippet` with the keywords styled and the comment lines muted.
-pub fn highlighted(snippet: &str, theme: &Theme) -> String {
-    let is_delimiter = |c: char| !(c.is_alphanumeric() || c == '_');
-    let mut text = String::new();
-    for line in snippet.lines() {
-        if line.trim_start().starts_with("//") {
-            text.push_str(&theme.muted.apply_to(line).to_string());
-        } else {
-            for piece in line.split_inclusive(is_delimiter) {
-                let (word, delimiter) = piece.split_at(piece.trim_end_matches(is_delimiter).len());
-                if RUST_KEYWORDS.contains(&word) {
-                    text.push_str(&theme.key.apply_to(word).to_string());
-                } else {
-                    text.push_str(word);
-                }
-                text.push_str(delimiter);
-            }
-        }
-        text.push('\n');
-    }
-    text
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,22 +303,5 @@ mod tests {
             CliArgs::try_parse_from(["fsq", "codegen", "SELECT 1", "--offline", "--sample", "5"])
                 .expect_err("sample and offline conflict");
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
-    }
-
-    #[test]
-    fn keywords_are_styled_and_comment_lines_are_muted() {
-        let theme = Theme::new(true);
-        let snippet = "// SELECT 1 FROM user\nuse firestore::*;\nstruct UserRow {}\n";
-
-        assert_eq!(
-            highlighted(snippet, &theme),
-            format!(
-                "{}\n{} firestore::*;\n{} UserRow {{}}\n",
-                theme.muted.apply_to("// SELECT 1 FROM user"),
-                theme.key.apply_to("use"),
-                theme.key.apply_to("struct"),
-            )
-        );
-        assert_eq!(highlighted(snippet, &Theme::new(false)), snippet);
     }
 }

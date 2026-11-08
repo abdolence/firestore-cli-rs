@@ -2,7 +2,7 @@ mod indexes;
 mod rows;
 mod statement;
 
-use crate::codegen::{highlighted, CodegenOptions};
+use crate::codegen::CodegenOptions;
 use crate::collection_tree::{CollectionTree, CollectionTreeTarget};
 use crate::connection::{Connection, EditionStatus};
 use crate::describe::{DescribeTarget, Description};
@@ -176,7 +176,7 @@ impl Session {
             Some(rows) => interruptible(options.sampled(&self.connection.db, sql, rows)).await??,
             None => options.offline(sql)?,
         };
-        self.output.print(&highlighted(&snippet, &self.theme))
+        self.output.print(&snippet)
     }
 
     async fn list_collection_tree(&self, target: CollectionTreeTarget) -> FsqResult<()> {
