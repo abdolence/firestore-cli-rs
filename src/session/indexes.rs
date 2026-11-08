@@ -7,8 +7,8 @@ use crate::meta::Switch;
 use crate::render::{counted, Footer, Grid, IndexChanges};
 use firestore::index_builder::FirestoreIndexesBuilder;
 use firestore::{
-    FirestoreCollectionId, FirestoreDb, FirestoreIndexDeleteTarget, FirestoreIndexListing,
-    FirestoreIndexParams,
+    FirestoreCollectionId, FirestoreDb, FirestoreIndexDefinition, FirestoreIndexDeleteTarget,
+    FirestoreIndexListing, FirestoreIndexParams,
 };
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -96,11 +96,8 @@ impl Session {
                 source,
             })
         };
-        let mut declarations = text
-            .parse::<IndexesFile>()
-            .map_err(invalid)?
-            .into_params()
-            .map_err(invalid)?;
+        let file = text.parse::<IndexesFile>().map_err(invalid)?;
+        let mut declarations = Vec::<FirestoreIndexParams>::try_from(file).map_err(invalid)?;
         let live = self.list_live_indexes(None).await?;
         for item in live
             .unrecognised_items()
@@ -238,7 +235,7 @@ impl Session {
 
     async fn index_create(&mut self, args: IndexCreateArgs) -> FsqResult<()> {
         let if_not_exists = args.if_not_exists;
-        let definition = args.into_definition();
+        let definition = FirestoreIndexDefinition::from(args);
         let group = definition.collection_group.clone();
         let waits = self.settings.wait == Switch::On;
         let started = Instant::now();

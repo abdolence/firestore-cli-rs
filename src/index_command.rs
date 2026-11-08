@@ -4,7 +4,7 @@ use clap::{Args, Subcommand};
 use firestore::{
     FirestoreCollectionId, FirestoreCompositeIndex, FirestoreIndexDefinition,
     FirestoreIndexDeleteTarget, FirestoreIndexField, FirestoreIndexFieldMode, FirestoreIndexId,
-    FirestoreIndexIdTarget, FirestoreIndexQueryScope, FirestoreQueryDirection,
+    FirestoreIndexIdTarget, FirestoreQueryDirection,
 };
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -145,14 +145,17 @@ impl From<IndexFieldSpec> for FirestoreIndexField {
     }
 }
 
-impl IndexCreateArgs {
-    pub fn into_definition(self) -> FirestoreIndexDefinition {
-        FirestoreIndexDefinition::new(
-            self.group,
-            composite_index(
-                self.fields.into_iter().map(Into::into).collect(),
-                self.scope.into(),
-            ),
+impl From<IndexCreateArgs> for FirestoreIndexDefinition {
+    fn from(args: IndexCreateArgs) -> Self {
+        Self::new(
+            args.group,
+            FirestoreCompositeIndex {
+                fields: args.fields.into_iter().map(Into::into).collect(),
+                query_scope: args.scope.into(),
+                search_options: None,
+                unique: false,
+                density: None,
+            },
         )
     }
 }
@@ -166,32 +169,22 @@ impl TryFrom<IndexDeleteArgs> for FirestoreIndexDeleteTarget {
                 args.id_or_group.parse::<FirestoreIndexId>()?,
             )));
         }
-        Ok(Self::Definition(FirestoreIndexDefinition::new(
-            args.id_or_group.parse()?,
-            composite_index(
-                args.fields.into_iter().map(Into::into).collect(),
-                args.scope.into(),
-            ),
-        )))
-    }
-}
-
-fn composite_index(
-    fields: Vec<FirestoreIndexField>,
-    query_scope: FirestoreIndexQueryScope,
-) -> FirestoreCompositeIndex {
-    FirestoreCompositeIndex {
-        fields,
-        query_scope,
-        search_options: None,
-        unique: false,
-        density: None,
+        Ok(Self::Definition(
+            IndexCreateArgs {
+                group: args.id_or_group.parse()?,
+                fields: args.fields,
+                scope: args.scope,
+                if_not_exists: false,
+            }
+            .into(),
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use firestore::FirestoreIndexQueryScope;
 
     fn field(path: &str, mode: FirestoreIndexFieldMode) -> FirestoreIndexField {
         FirestoreIndexField {
@@ -278,8 +271,8 @@ mod tests {
             target,
             FirestoreIndexDeleteTarget::Definition(FirestoreIndexDefinition::new(
                 "books".parse().expect("a collection ID"),
-                composite_index(
-                    vec![
+                FirestoreCompositeIndex {
+                    fields: vec![
                         field(
                             "genre",
                             FirestoreIndexFieldMode::Order(FirestoreQueryDirection::Ascending)
@@ -289,8 +282,11 @@ mod tests {
                             FirestoreIndexFieldMode::Order(FirestoreQueryDirection::Descending)
                         ),
                     ],
-                    FirestoreIndexQueryScope::AllDescendants
-                )
+                    query_scope: FirestoreIndexQueryScope::AllDescendants,
+                    search_options: None,
+                    unique: false,
+                    density: None,
+                }
             ))
         );
     }

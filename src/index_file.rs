@@ -236,41 +236,39 @@ impl FromStr for IndexesFile {
     }
 }
 
-#[derive(Default)]
-struct Declarations(BTreeMap<FirestoreCollectionId, FirestoreIndexParams>);
+impl TryFrom<IndexesFile> for Vec<FirestoreIndexParams> {
+    type Error = IndexesFileProblem;
 
-impl Declarations {
-    fn group(&mut self, id: &FirestoreCollectionId) -> &mut FirestoreIndexParams {
-        self.0
-            .entry(id.clone())
-            .or_insert_with(|| FirestoreIndexParams::new(id.clone()))
-    }
-}
-
-impl IndexesFile {
     /// One declaration per collection group the file names, in the order of the groups' IDs.
-    pub fn into_params(self) -> Result<Vec<FirestoreIndexParams>, IndexesFileProblem> {
-        let mut declarations = Declarations::default();
-        for index in self.indexes {
+    fn try_from(file: IndexesFile) -> Result<Self, Self::Error> {
+        fn group<'a>(
+            declarations: &'a mut BTreeMap<FirestoreCollectionId, FirestoreIndexParams>,
+            id: &FirestoreCollectionId,
+        ) -> &'a mut FirestoreIndexParams {
             declarations
-                .group(&index.collection_group)
+                .entry(id.clone())
+                .or_insert_with(|| FirestoreIndexParams::new(id.clone()))
+        }
+
+        let mut declarations = BTreeMap::new();
+        for index in file.indexes {
+            group(&mut declarations, &index.collection_group)
                 .composite_indexes
                 .push(index.try_into()?);
         }
-        for field_override in self.field_overrides {
-            let params = declarations.group(&field_override.collection_group);
+        for field_override in file.field_overrides {
+            let params = group(&mut declarations, &field_override.collection_group);
             if field_override.ttl == Some(true) {
                 params.ttl_fields.push(field_override.field_path.clone());
             }
             params.field_overrides.push(field_override.try_into()?);
         }
-        for ttl in self.fsq.unwrap_or_default().ttl {
-            declarations
-                .group(&ttl.collection_group)
+        for ttl in file.fsq.unwrap_or_default().ttl {
+            group(&mut declarations, &ttl.collection_group)
                 .ttl_fields
                 .push(ttl.field_path);
         }
-        Ok(declarations.0.into_values().collect())
+        Ok(declarations.into_values().collect())
     }
 }
 
@@ -646,11 +644,13 @@ mod tests {
         }
     }
 
+    fn try_params_of(text: &str) -> Result<Vec<FirestoreIndexParams>, IndexesFileProblem> {
+        let file = text.parse::<IndexesFile>().expect("an indexes file");
+        Vec::try_from(file)
+    }
+
     fn params_of(text: &str) -> Vec<FirestoreIndexParams> {
-        text.parse::<IndexesFile>()
-            .expect("an indexes file")
-            .into_params()
-            .expect("declarations")
+        try_params_of(text).expect("declarations")
     }
 
     fn params_of_group(text: &str, id: &str) -> FirestoreIndexParams {
@@ -851,13 +851,10 @@ mod tests {
             ("apiScope", r#""apiScope": "DATASTORE_MODE_API""#),
             ("multikey", r#""multikey": true"#),
         ] {
-            let problem = format!(
+            let problem = try_params_of(&format!(
                 r#"{{"indexes": [{{"collectionGroup": "cities", "queryScope": "COLLECTION",
                 "fields": [{{"fieldPath": "name", "order": "ASCENDING"}}], {text}}}]}}"#
-            )
-            .parse::<IndexesFile>()
-            .expect("valid JSON of the right shape")
-            .into_params()
+            ))
             .expect_err("an unsupported setting");
 
             assert!(
@@ -884,12 +881,11 @@ mod tests {
 
     #[test]
     fn a_field_with_two_modes_is_refused() {
-        let problem = r#"{"indexes": [{"collectionGroup": "cities", "queryScope": "COLLECTION",
-            "fields": [{"fieldPath": "name", "order": "ASCENDING", "arrayConfig": "CONTAINS"}]}]}"#
-            .parse::<IndexesFile>()
-            .expect("valid JSON of the right shape")
-            .into_params()
-            .expect_err("two modes");
+        let problem = try_params_of(
+            r#"{"indexes": [{"collectionGroup": "cities", "queryScope": "COLLECTION",
+            "fields": [{"fieldPath": "name", "order": "ASCENDING", "arrayConfig": "CONTAINS"}]}]}"#,
+        )
+        .expect_err("two modes");
 
         assert!(
             matches!(problem, IndexesFileProblem::FieldMode(InvalidFieldMode { field_path }) if field_path == "name")
