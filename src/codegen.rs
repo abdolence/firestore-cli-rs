@@ -64,7 +64,8 @@ impl CodegenOptions {
         sql: &str,
         rows: SampleSize,
     ) -> FsqResult<String> {
-        self.offline(sql)?;
+        let parameters = FirestoreSqlParameters::from(self);
+        FirestoreSqlStatement::fluent_rust(sql, &parameters, &[])?;
         let sample = self
             .parameters
             .iter()
@@ -76,7 +77,7 @@ impl CodegenOptions {
             .await?;
         Ok(FirestoreSqlStatement::fluent_rust(
             sql,
-            &FirestoreSqlParameters::from(self),
+            &parameters,
             &sample,
         )?)
     }
@@ -139,11 +140,11 @@ pub struct GenerateCommand {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
-    fn binding(argument: &str) -> ParameterBinding {
+    pub(crate) fn binding(argument: &str) -> ParameterBinding {
         argument.parse().expect(argument)
     }
 

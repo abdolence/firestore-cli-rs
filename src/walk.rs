@@ -60,8 +60,8 @@ impl<'a> Walk<'a> {
                 .documents(collection, true, Some(remaining))
                 .await?
                 .take(remaining);
-            while let Some(document) = documents.next().await {
-                names.push(document?.name);
+            while let Some(document) = documents.try_next().await? {
+                names.push(document.name);
             }
         }
         Ok(names)

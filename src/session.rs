@@ -130,23 +130,31 @@ impl Session {
                 }
             }
             MetaCommand::Timing(switch) => {
-                self.settings.timing = switch.unwrap_or(self.settings.timing.toggled());
-                self.output
-                    .notice(&format!("Timing is {}.", self.settings.timing))?;
+                self.settings.timing = self.switched("Timing", self.settings.timing, switch)?;
             }
             MetaCommand::Generate(generate) => {
                 self.codegen(generate.sql.as_deref(), &generate.options)
                     .await?
             }
             MetaCommand::Wait(switch) => {
-                self.settings.wait = switch.unwrap_or(self.settings.wait.toggled());
-                self.output.notice(&format!(
-                    "Waiting for index builds is {}.",
-                    self.settings.wait
-                ))?;
+                self.settings.wait =
+                    self.switched("Waiting for index builds", self.settings.wait, switch)?;
             }
         }
         Ok(Flow::Continue)
+    }
+
+    /// The switch `\timing` or `\wait` leaves `current` at: `requested`, or the other position
+    /// when none was named. Tells the user which it is.
+    fn switched(
+        &self,
+        name: &str,
+        current: Switch,
+        requested: Option<Switch>,
+    ) -> FsqResult<Switch> {
+        let switch = requested.unwrap_or(current.toggled());
+        self.output.notice(&format!("{name} is {switch}."))?;
+        Ok(switch)
     }
 
     pub async fn describe(&mut self, target: &DescribeTarget) -> FsqResult<()> {

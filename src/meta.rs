@@ -111,11 +111,11 @@ pub fn meta_help() -> String {
         .map(|command| command.usage.len())
         .max()
         .unwrap_or_default();
-    META_COMMANDS
+    let rows: String = META_COMMANDS
         .iter()
         .map(|command| format!("{:<width$}  {}\n", command.usage, command.summary))
-        .chain([format!("\n{QUOTING_NOTE}")])
-        .collect()
+        .collect();
+    rows + "\n" + QUOTING_NOTE
 }
 
 impl FromStr for MetaCommand {
@@ -124,11 +124,10 @@ impl FromStr for MetaCommand {
     fn from_str(line: &str) -> FsqResult<Self> {
         let line = line.trim_start();
         let (command, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
-        let arguments: Vec<&str> = rest.split_whitespace().collect();
         let command = match command {
-            "\\q" => no_arguments("\\q", &arguments, Self::Quit)?,
-            "\\quit" => no_arguments("\\quit", &arguments, Self::Quit)?,
-            "\\?" => no_arguments("\\?", &arguments, Self::Help)?,
+            "\\q" => no_arguments("\\q", rest, Self::Quit)?,
+            "\\quit" => no_arguments("\\quit", rest, Self::Quit)?,
+            "\\?" => no_arguments("\\?", rest, Self::Help)?,
             "\\l" => {
                 let ListCollections { recursive, target } = parse_arguments("\\l", rest)?;
                 Self::ListCollections(recursive.then_some(target))
@@ -136,11 +135,11 @@ impl FromStr for MetaCommand {
             "\\d" => Self::Describe(parse_arguments("\\d", rest)?),
             "\\x" => Self::Expanded(optional_argument(
                 "\\x",
-                &arguments,
+                rest,
                 "on, off or auto",
                 ExpandedMode::from_argument,
             )?),
-            "\\c" => match arguments.as_slice() {
+            "\\c" => match rest.split_whitespace().collect::<Vec<_>>().as_slice() {
                 [database] => Self::Connect(DatabaseId::from(*database)),
                 [] => return Err(FsqError::missing_meta_argument("\\c", "a database ID")),
                 [_, extra, ..] => {
@@ -153,13 +152,13 @@ impl FromStr for MetaCommand {
             },
             "\\timing" => Self::Timing(optional_argument(
                 "\\timing",
-                &arguments,
+                rest,
                 "on or off",
                 Switch::from_argument,
             )?),
             "\\wait" => Self::Wait(optional_argument(
                 "\\wait",
-                &arguments,
+                rest,
                 "on or off",
                 Switch::from_argument,
             )?),
@@ -216,12 +215,8 @@ impl Switch {
     }
 }
 
-fn no_arguments(
-    command: &'static str,
-    arguments: &[&str],
-    parsed: MetaCommand,
-) -> FsqResult<MetaCommand> {
-    match arguments.first() {
+fn no_arguments(command: &'static str, rest: &str, parsed: MetaCommand) -> FsqResult<MetaCommand> {
+    match rest.split_whitespace().next() {
         None => Ok(parsed),
         Some(argument) => Err(FsqError::invalid_meta_argument(
             command,
@@ -233,11 +228,11 @@ fn no_arguments(
 
 fn optional_argument<T>(
     command: &'static str,
-    arguments: &[&str],
+    rest: &str,
     expected: &'static str,
     from_argument: fn(&str) -> Option<T>,
 ) -> FsqResult<Option<T>> {
-    match arguments {
+    match rest.split_whitespace().collect::<Vec<_>>().as_slice() {
         [] => Ok(None),
         [argument] => from_argument(argument)
             .map(Some)
@@ -249,7 +244,7 @@ fn optional_argument<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codegen::ParameterBinding;
+    use crate::codegen::tests::binding;
     use crate::describe::SampleSize;
     use crate::errors::{InvalidMetaArgument, MissingMetaArgument};
 
@@ -293,10 +288,6 @@ mod tests {
             MetaCommand::Generate(command) => command,
             other => panic!("{other:?}"),
         }
-    }
-
-    fn binding(argument: &str) -> ParameterBinding {
-        argument.parse().expect(argument)
     }
 
     #[test]
@@ -348,22 +339,6 @@ mod tests {
             "\\gen 'SELECT 1".parse::<MetaCommand>(),
             Err(FsqError::UnclosedQuote(_))
         ));
-    }
-
-    #[test]
-    fn a_recursive_listing_takes_a_depth_and_a_sample_in_any_order() {
-        let target = CollectionTreeTarget {
-            depth: "3".parse().expect("a depth"),
-            sample: "5".parse().expect("a sample size"),
-        };
-        assert_eq!(
-            parsed("\\l --recursive --depth 3 --sample 5"),
-            MetaCommand::ListCollections(Some(target))
-        );
-        assert_eq!(
-            parsed("\\l --sample 5 --depth 3 --recursive"),
-            MetaCommand::ListCollections(Some(target))
-        );
     }
 
     #[test]

@@ -66,32 +66,16 @@ pub struct CollectionTreeTarget {
     pub sample: SampleSize,
 }
 
-/// How many of the sampled documents of a collection have a subcollection.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SeenUnder {
-    documents_with_it: usize,
-    sampled: usize,
-    parent: FirestoreCollectionId,
-}
-
-impl Display for SeenUnder {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} of {} sampled {}",
-            self.documents_with_it, self.sampled, self.parent
-        )
-    }
-}
-
 /// A collection by its path with `*` for each document ID on the way: `users/*/addresses`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TreeCollection {
     path: String,
     id: FirestoreCollectionId,
     depth: usize,
-    /// `None` for a collection under the root, which no sample is taken to find.
-    seen_under: Option<SeenUnder>,
+    /// How many of the sampled documents of the parent collection have this one, such as
+    /// `3 of 20 sampled users`; `None` for a collection under the root, which no sample is taken
+    /// to find.
+    seen_under: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,14 +108,15 @@ impl CollectionTree {
         let mut collections = Vec::new();
         let mut levels = Vec::new();
         for id in walk.collection_ids(None).await? {
+            let path = id.to_string();
             collections.push(TreeCollection {
-                path: id.to_string(),
+                path: path.clone(),
                 id: id.clone(),
                 depth: 1,
                 seen_under: None,
             });
             levels.push(Level {
-                path: id.to_string(),
+                path,
                 instances: vec![CollectionPath::from(id.clone())],
                 id,
             });
@@ -160,11 +145,12 @@ impl CollectionTree {
                         path: path.clone(),
                         id: id.clone(),
                         depth,
-                        seen_under: Some(SeenUnder {
-                            documents_with_it: instances.len(),
-                            sampled: documents.len(),
-                            parent: level.id.clone(),
-                        }),
+                        seen_under: Some(format!(
+                            "{} of {} sampled {}",
+                            instances.len(),
+                            documents.len(),
+                            level.id
+                        )),
                     });
                     next_levels.push(Level {
                         path,
@@ -197,9 +183,7 @@ impl CollectionTree {
                 Some(Cell::Text(collection.id.to_string())),
                 Some(Cell::Text(collection.path)),
                 Some(Cell::Count(collection.depth as u64)),
-                collection
-                    .seen_under
-                    .map(|seen_under| Cell::Text(seen_under.to_string())),
+                collection.seen_under.map(Cell::Text),
             ]);
         }
         grid
