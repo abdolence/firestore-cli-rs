@@ -16,12 +16,17 @@ use std::time::Instant;
 
 /// The collection groups that hold an index, a field override, a TTL field or an item the
 /// firestore crate could not model.
-fn live_groups(listing: &FirestoreIndexListing) -> BTreeSet<&FirestoreCollectionId> {
+fn live_groups(listing: &FirestoreIndexListing) -> BTreeSet<FirestoreCollectionId> {
     listing
         .indexes
         .iter()
-        .map(|listed| &listed.collection_group)
-        .chain(listing.fields.iter().map(|field| &field.collection_group))
+        .map(|listed| listed.collection_group.clone())
+        .chain(
+            listing
+                .fields
+                .iter()
+                .map(|field| field.collection_group.clone()),
+        )
         .chain(
             listing
                 .unrecognised_items()
@@ -107,9 +112,9 @@ impl Session {
         for group in live_groups(&live) {
             if !declarations
                 .iter()
-                .any(|declared| &declared.collection_group == group)
+                .any(|declared| declared.collection_group == group)
             {
-                declarations.push(FirestoreIndexParams::new(group.clone()));
+                declarations.push(FirestoreIndexParams::new(group));
             }
         }
         declarations.sort_by(|left, right| left.collection_group.cmp(&right.collection_group));
@@ -325,6 +330,6 @@ mod tests {
             ],
         };
 
-        assert_eq!(live_groups(&listing), BTreeSet::from([&group("orders")]));
+        assert_eq!(live_groups(&listing), BTreeSet::from([group("orders")]));
     }
 }
