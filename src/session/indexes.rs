@@ -14,6 +14,22 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Instant;
 
+/// The collection groups that hold an index, a field override, a TTL field or an item the
+/// firestore crate could not model.
+fn live_groups(listing: &FirestoreIndexListing) -> BTreeSet<&FirestoreCollectionId> {
+    listing
+        .indexes
+        .iter()
+        .map(|listed| &listed.collection_group)
+        .chain(listing.fields.iter().map(|field| &field.collection_group))
+        .chain(
+            listing
+                .unrecognised_items()
+                .filter_map(|item| item.collection_group),
+        )
+        .collect()
+}
+
 impl Session {
     pub async fn run_index(&mut self, command: IndexCommand) -> FsqResult<()> {
         match command {
@@ -59,9 +75,10 @@ impl Session {
         }
     }
 
-    /// The declarations of the file, one per collection group it names. A group the database has
-    /// indexes or field overrides in and the file does not name declares nothing, so that the plan
-    /// shows what it holds as undeclared and `--prune` removes it.
+    /// The declarations of the file, one per collection group it names. A group the database holds
+    /// anything in and the file does not name declares nothing, so that the plan shows what it
+    /// holds as undeclared and `--prune` removes it. An item that no group can be named for shows
+    /// as a notice.
     async fn index_declarations(
         &self,
         args: &IndexFileArgs,
@@ -80,13 +97,14 @@ impl Session {
             .into_params()
             .map_err(invalid)?;
         let live = self.list_live_indexes(None).await?;
-        let live_groups: BTreeSet<&FirestoreCollectionId> = live
-            .indexes
-            .iter()
-            .map(|listed| &listed.collection_group)
-            .chain(live.fields.iter().map(|field| &field.collection_group))
-            .collect();
-        for group in live_groups {
+        for item in live
+            .unrecognised_items()
+            .filter(|item| item.collection_group.is_none())
+        {
+            self.output
+                .notice(&format!("in no collection group: {item}"))?;
+        }
+        for group in live_groups(&live) {
             if !declarations
                 .iter()
                 .any(|declared| &declared.collection_group == group)
@@ -270,5 +288,43 @@ impl Session {
             Some(interruptible(delete.execute()).await??)
         };
         self.show_index_dropped(dropped.as_ref(), started)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use firestore::FirestoreUnrecognisedIndexItem;
+
+    fn group(id: &str) -> FirestoreCollectionId {
+        id.parse().expect("a collection ID")
+    }
+
+    fn unrecognised(
+        name: &str,
+        collection_group: Option<FirestoreCollectionId>,
+    ) -> FirestoreUnrecognisedIndexItem {
+        FirestoreUnrecognisedIndexItem {
+            name: name.to_string(),
+            collection_group,
+            reason: "a multikey index".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_group_that_holds_only_an_unrecognised_item_is_a_live_group() {
+        let listing = FirestoreIndexListing {
+            indexes: Vec::new(),
+            fields: Vec::new(),
+            unrecognised: vec![
+                unrecognised(
+                    "projects/p/databases/d/collectionGroups/orders/indexes/1",
+                    Some(group("orders")),
+                ),
+                unrecognised("not a resource name", None),
+            ],
+        };
+
+        assert_eq!(live_groups(&listing), BTreeSet::from([&group("orders")]));
     }
 }
