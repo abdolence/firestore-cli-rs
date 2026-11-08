@@ -18,6 +18,8 @@ crate, which translates SQL into Firestore pipelines.
   `firestore.indexes.json`, the file of the Firebase CLI;
 * **Collections and fields:** `\l` lists the collections, and `\d` lists the field paths of a collection with their
   types, how often they are present and an example value;
+* **Fluent Rust code:** `fsq codegen` and `\gen` show the code of the firestore crate's fluent API for a `SELECT`, with
+  a row struct typed from sample rows;
 * **Export and import:** documents as JSON lines, in an encoding that reads back to the same Firestore types;
 * **Scripting:** a statement or a script without the REPL, with `--format json` or `jsonl` output for other tools.
 
@@ -68,6 +70,7 @@ A statement ends with `;` and can span several lines. A line that starts with `\
 | `\c <database>` | connects to another database of the project |
 | `\timing [on\|off]` | adds the round trip time and the execution stats to the footer |
 | `\wait [on\|off]` | waits for `CREATE INDEX` and `ALTER COLLECTION` to finish, on by default |
+| `\gen [SELECT] [--param name=value] [--sample N] [--offline]` | shows the fluent Rust code of a `SELECT`, or of the last one that ran, see [Fluent Rust code](#fluent-rust-code) |
 | `\?` | lists the meta-commands |
 | `\q` | quits, as Ctrl-D does |
 
@@ -248,6 +251,30 @@ my-project/my-database (enterprise)> \d books
 ╰──────────────┴──────────────┴─────────┴──────────────────────╯
 10 field paths · 753 ms · from a sample of 3 documents
 ```
+
+## Fluent Rust code
+
+```sh
+fsq -p my-project -d my-database codegen \
+  'SELECT title, rating FROM books WHERE rating >= @min LIMIT 10' --param min=4.0
+```
+
+`codegen` prints the Rust code that the `codegen` feature of the firestore crate generates for a `SELECT`: a row
+struct, and an async function that runs the equivalent pipeline of the fluent API. It is meant for porting a
+statement to application code, and the output is a starting point to paste and edit. fsq prints what the crate
+returns and generates nothing itself. `\gen <SELECT>` in the REPL does the same, and `\gen` alone uses the last
+`SELECT` that ran. The output is highlighted when it goes to a terminal.
+
+| Option | What it does |
+|---|---|
+| `--param name=value` | binds `@name` to a JSON literal, which gives the function argument its type: `4` is an integer, `4.0` a double, `true` a boolean and `"text"` a string. In a shell the quotes of a string need quoting too, as in `--param 'genre="sf"'`. A `?` parameter cannot be bound |
+| `--sample N` | runs the `SELECT` for at most N rows, 100 by default, and types the fields of the row struct from them. The statement runs as a read, with a limit of N rows, and the output does not show that limit |
+| `--offline` | does not run the `SELECT` and needs no connection, so every field is typed as unknown JSON; it does not combine with `--sample` |
+
+A statement that is not a `SELECT`, and a `SELECT` with a construct the crate cannot show, fails with the crate's
+error that names the construct. The [fluent code](https://firestore-rust.abdolence.dev/sql/codegen.html) chapter of
+the crate lists what the output covers and how it types the fields. The sample is read with a `SELECT`, so it needs
+an Enterprise edition database, and `--offline` works on any edition.
 
 ## Export and import
 
