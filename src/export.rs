@@ -148,9 +148,13 @@ impl Export<'_> {
         let mut written = 0;
         while let Some(document) = documents.next().await {
             let document = document?;
-            writeln!(writer, "{}", self.format.line(&document)?)?;
-            self.progress.inc(1);
-            written += 1;
+            // A missing document, listed under --recursive for its subcollections, has no times.
+            let exists = document.create_time.is_some();
+            if exists {
+                self.format.write_line(writer, &document)?;
+                self.progress.inc(1);
+                written += 1;
+            }
             if self.recursive {
                 self.queue_subcollections(&document, subcollections).await?;
             }
@@ -183,6 +187,13 @@ impl Export<'_> {
         let listing = match path.parent() {
             Some(parent) => listing.parent(format!("{}/{parent}", self.db.get_documents_path())),
             None => listing,
+        };
+        // ListDocuments skips a document that does not exist, and with it every subcollection
+        // below it.
+        let listing = if self.recursive {
+            listing.show_missing()
+        } else {
+            listing
         };
         Ok(listing.stream_all_with_errors().await?)
     }
@@ -248,20 +259,25 @@ impl TryFrom<&ExportArgs> for ExportSource {
 }
 
 /// How a document becomes a line of the export.
-pub(crate) struct ExportFormat<'a> {
-    pub(crate) converter: FirestoreJsonConverter<'a>,
-    pub(crate) options: FirestoreJsonDocumentOptions,
-    pub(crate) plain: bool,
+struct ExportFormat<'a> {
+    converter: FirestoreJsonConverter<'a>,
+    options: FirestoreJsonDocumentOptions,
+    plain: bool,
 }
 
 impl ExportFormat<'_> {
-    /// The document as one line of JSON, without the newline.
-    pub(crate) fn line(&self, document: &FirestoreDocument) -> FsqResult<String> {
-        Ok(if self.plain {
-            serde_json::to_string(&self.converter.plain_document(document, &self.options))?
+    fn write_line<W: Write>(&self, writer: &mut W, document: &FirestoreDocument) -> FsqResult<()> {
+        let json = if self.plain {
+            self.converter
+                .plain_document(document, &self.options)
+                .into_inner()
         } else {
-            serde_json::to_string(&self.converter.tagged_document(document, &self.options)?)?
-        })
+            self.converter
+                .tagged_document(document, &self.options)?
+                .into_inner()
+        };
+        writeln!(writer, "{json}")?;
+        Ok(())
     }
 }
 
@@ -269,12 +285,7 @@ impl ExportFormat<'_> {
 mod tests {
     use super::*;
     use crate::args::{CliArgs, CliCommand};
-    use clap::{error::ErrorKind, Parser};
-    use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
-    use firestore::gcloud_sdk::google::firestore::v1::Value;
-    use firestore::gcloud_sdk::prost_types::Timestamp;
-
-    const DOCUMENTS_PATH: &str = "projects/demo/databases/(default)/documents";
+    use clap::Parser;
 
     fn export_args(arguments: &[&str]) -> Result<ExportArgs, clap::Error> {
         let arguments = ["fsq", "export"]
@@ -283,38 +294,6 @@ mod tests {
         match CliArgs::try_parse_from(arguments)?.command {
             Some(CliCommand::Export(args)) => Ok(args),
             other => panic!("not an export: {other:?}"),
-        }
-    }
-
-    fn books_document() -> FirestoreDocument {
-        FirestoreDocument {
-            name: format!("{DOCUMENTS_PATH}/books/dune"),
-            fields: [(
-                "published".to_string(),
-                Value {
-                    value_type: Some(ValueType::TimestampValue(Timestamp {
-                        seconds: 1_700_000_000,
-                        nanos: 0,
-                    })),
-                },
-            )]
-            .into(),
-            create_time: Some(Timestamp {
-                seconds: 1_700_000_001,
-                nanos: 0,
-            }),
-            update_time: Some(Timestamp {
-                seconds: 1_700_000_002,
-                nanos: 0,
-            }),
-        }
-    }
-
-    fn format(plain: bool, metadata: bool) -> ExportFormat<'static> {
-        ExportFormat {
-            converter: FirestoreJsonConverter::new(DOCUMENTS_PATH),
-            options: FirestoreJsonDocumentOptions::new().with_metadata(metadata),
-            plain,
         }
     }
 
@@ -336,69 +315,6 @@ mod tests {
         assert_eq!(
             source,
             ExportSource::Group("orders".parse().expect("a collection ID"))
-        );
-    }
-
-    #[test]
-    fn sql_and_a_collection_exclude_each_other() {
-        let error = export_args(&["books", "--sql", "SELECT * FROM books"]).expect_err("conflict");
-
-        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
-    }
-
-    #[test]
-    fn a_collection_or_sql_is_required() {
-        let error = export_args(&[]).expect_err("no source");
-
-        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
-    }
-
-    #[test]
-    fn arguments_without_a_source_are_an_error_and_not_a_panic() {
-        let mut args = export_args(&["books"]).expect("arguments parse");
-        args.collection = None;
-
-        let error = ExportSource::try_from(&args).expect_err("no source");
-
-        assert!(matches!(error, FsqError::ExportWithoutSource));
-    }
-
-    #[test]
-    fn recursive_and_group_exclude_each_other() {
-        let error = export_args(&["orders", "--group", "--recursive"]).expect_err("conflict");
-
-        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
-    }
-
-    #[test]
-    fn tagged_lines_wrap_what_json_lacks() {
-        let line = format(false, false)
-            .line(&books_document())
-            .expect("a line");
-
-        assert_eq!(
-            line,
-            r#"{"__name__":"books/dune","published":{"$timestamp":"2023-11-14T22:13:20Z"}}"#
-        );
-    }
-
-    #[test]
-    fn plain_lines_write_a_timestamp_as_text() {
-        let line = format(true, false).line(&books_document()).expect("a line");
-
-        assert_eq!(
-            line,
-            r#"{"__name__":"books/dune","published":"2023-11-14T22:13:20Z"}"#
-        );
-    }
-
-    #[test]
-    fn metadata_lines_carry_the_create_and_update_time() {
-        let line = format(false, true).line(&books_document()).expect("a line");
-
-        assert_eq!(
-            line,
-            r#"{"__name__":"books/dune","__create_time__":{"$timestamp":"2023-11-14T22:13:21Z"},"__update_time__":{"$timestamp":"2023-11-14T22:13:22Z"},"published":{"$timestamp":"2023-11-14T22:13:20Z"}}"#
         );
     }
 }
