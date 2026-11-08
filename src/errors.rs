@@ -1,4 +1,5 @@
 use firestore::errors::FirestoreError;
+use firestore::gcloud_sdk::tonic::Code;
 use std::num::ParseIntError;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -23,6 +24,16 @@ pub enum FsqError {
     MissingMetaArgument(MissingMetaArgument),
     #[error(transparent)]
     ReadScript(ReadScript),
+    #[error(transparent)]
+    OpenFile(OpenFile),
+    #[error("export --sql runs a SELECT, and this statement is not one")]
+    ExportNeedsRows,
+    #[error(transparent)]
+    ImportLine(ImportLine),
+    #[error(transparent)]
+    ImportWrite(ImportWrite),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
     #[error(transparent)]
     PagerFailed(PagerFailed),
     #[error("interrupted")]
@@ -77,6 +88,54 @@ pub struct ReadScript {
     pub path: PathBuf,
     #[source]
     pub source: std::io::Error,
+}
+
+#[derive(Debug, Error)]
+#[error("cannot {purpose} {}: {source}", path.display())]
+pub struct OpenFile {
+    pub path: PathBuf,
+    /// The verb that names what fsq wanted the file for: `read` or `write`.
+    pub purpose: &'static str,
+    #[source]
+    pub source: std::io::Error,
+}
+
+/// A line of an import file that is not a document.
+#[derive(Debug, Error)]
+#[error("line {line}: {cause}")]
+pub struct ImportLine {
+    pub line: usize,
+    #[source]
+    pub cause: ImportLineCause,
+}
+
+#[derive(Debug, Error)]
+pub enum ImportLineCause {
+    #[error("not JSON: {0}")]
+    InvalidJson(#[source] serde_json::Error),
+    #[error(transparent)]
+    InvalidDocument(InvalidDocument),
+    #[error(transparent)]
+    Firestore(FirestoreError),
+}
+
+/// A document the tagged encoding refused.
+#[derive(Debug, Error)]
+#[error("{code}: {message}")]
+pub struct InvalidDocument {
+    /// One of the constants of `firestore::errors::codes`.
+    pub code: String,
+    pub message: String,
+}
+
+/// A document of an import file that Firestore refused to write.
+#[derive(Debug, Error)]
+#[error("line {line}: writing {document} failed with {code:?}: {message}")]
+pub struct ImportWrite {
+    pub line: usize,
+    pub document: String,
+    pub code: Code,
+    pub message: String,
 }
 
 #[derive(Debug, Error)]

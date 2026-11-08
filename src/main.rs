@@ -2,6 +2,8 @@ mod args;
 mod connection;
 mod describe;
 mod errors;
+mod export;
+mod import;
 mod meta;
 mod render;
 mod repl;
@@ -86,6 +88,14 @@ async fn run(args: CliArgs) -> FsqResult<()> {
                     .await
                 }
             }
+        }
+        CliCommand::Export(export_args) => {
+            let connection = Connection::open(args.project, args.database).await?;
+            export::run(&connection, &export_args).await
+        }
+        CliCommand::Import(import_args) => {
+            let connection = Connection::open(args.project, args.database).await?;
+            import::run(&connection, &import_args).await
         }
         CliCommand::Describe(target) => {
             let connection = Connection::open(args.project, args.database).await?;

@@ -1,5 +1,7 @@
 use crate::connection::{DatabaseId, ProjectId};
 use crate::describe::DescribeTarget;
+use crate::export::ExportArgs;
+use crate::import::ImportArgs;
 use crate::render::OutputFormat;
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
@@ -52,6 +54,12 @@ pub enum CliCommand {
         about = "List the field paths of a collection, with their types, % present and an example value"
     )]
     Describe(DescribeTarget),
+    #[command(
+        about = "Write the documents of a collection, or the rows of a SELECT, as JSON lines"
+    )]
+    Export(ExportArgs),
+    #[command(about = "Write the documents of a JSON lines file, as `export` writes them")]
+    Import(ImportArgs),
 }
 
 #[derive(Args, Debug, Default)]

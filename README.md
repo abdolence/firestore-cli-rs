@@ -16,6 +16,7 @@ crate, which translates SQL into Firestore pipelines.
   build with a spinner;
 * **Collections and fields:** `\l` lists the collections, and `\d` lists the field paths of a collection with their
   types, how often they are present and an example value;
+* **Export and import:** documents as JSON lines, in an encoding that reads back to the same Firestore types;
 * **Scripting:** a statement or a script without the REPL, with `--format json` or `jsonl` output for other tools.
 
 ## Installation
@@ -161,6 +162,50 @@ my-project/my-database (enterprise)> \d books
 ╰──────────────┴──────────────┴─────────┴──────────────────────╯
 10 field paths · 753 ms · from a sample of 3 documents
 ```
+
+## Export and import
+
+```sh
+fsq -p my-project -d my-database export books -o books.jsonl
+fsq -p my-project -d my-database export users --recursive -o users.jsonl
+fsq -p my-project -d my-database import books.jsonl
+```
+
+`export` writes one document per line to stdout, or to the file `-o` names. A line is a JSON object with the
+document's `__name__`, relative to the database, and its fields. The values use the tagged JSON encoding of the
+firestore crate, which reads back to the same Firestore types: a timestamp is `{"$timestamp": "2023-11-14T22:13:20Z"}`,
+bytes are `{"$bytes": ".."}`, a reference is `{"$ref": "books/dune"}` and an integer beyond 2^53 is `{"$int": ".."}`.
+The [JSON conversion](https://firestore-rust.abdolence.dev/json.html) chapter of the crate lists every type.
+
+| Option | What it does |
+|---|---|
+| `<collection>` | exports a collection, by path for a subcollection such as `users/alice/orders` |
+| `--group` | exports every collection with that ID, at any depth; the argument is a collection ID, and `--recursive` does not combine with it |
+| `--recursive` | adds the subcollections of every document; each name holds its full relative path. It lists the subcollections with one extra request per document |
+| `--sql '<SELECT>'` | exports the rows of a `SELECT` instead of a collection, on an Enterprise edition database. A row needs its `__name__` to be imported |
+| `--with-metadata` | adds `__create_time__` and `__update_time__` to every document. `import` ignores both |
+| `--plain` | writes the plain encoding, which is for reading and cannot be imported |
+| `-o`, `--output` | writes to a file instead of stdout |
+
+Listing a collection works on both editions. When stdout is not a terminal, a spinner on stderr shows how many
+documents were written, and a line on stderr states the total.
+
+`import` reads a file, or stdin for `-`, and writes the documents in batches of 500 writes through the batch writer of
+the firestore crate. A bar shows the position in the file, or a spinner when the input is stdin.
+
+| Option | What it does |
+|---|---|
+| `--on-conflict overwrite` | the default: creates a document, or replaces it when it exists, so that an export imported again gives the same documents |
+| `--on-conflict skip` | leaves a document that exists as it is and counts it as skipped |
+| `--on-conflict fail` | reports a document that exists as a failure |
+| `--merge` | writes the top-level fields a line lists, and keeps the other fields of an existing document; it cannot be combined with `--on-conflict` |
+| `--keep-going` | goes on after a failure and reports every one |
+
+A line that is not valid JSON, or not a document in the tagged encoding, fails with its line number and the code of
+the firestore crate, such as `JSON_UNKNOWN_WRAPPER`. A document that Firestore refuses fails with its line number and
+the status code. Without `--keep-going` the import stops at the first failure. The batch that held the failing
+document was sent as a whole and the other writes of it may have been applied, since a batch is not atomic. fsq
+exits with 1 when any document failed. The last line on stderr counts the documents written, skipped and failed.
 
 ## Scripting
 
