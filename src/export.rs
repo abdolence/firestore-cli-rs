@@ -5,8 +5,8 @@ use crate::render::{animated, counted, Output};
 use crate::walk::{DocumentStream, Walk};
 use clap::ArgGroup;
 use firestore::{
-    FirestoreCollectionId, FirestoreDb, FirestoreDocument, FirestoreJsonOptions,
-    FirestoreSqlOptions, FirestoreSqlOutcome,
+    FirestoreCollectionId, FirestoreDb, FirestoreDocument, FirestoreJsonEncoding,
+    FirestoreJsonOptions, FirestoreSqlOptions, FirestoreSqlOutcome,
 };
 use futures::StreamExt;
 use indicatif::ProgressBar;
@@ -66,8 +66,13 @@ pub async fn run(connection: &Connection, args: &ExportArgs) -> FsqResult<()> {
     let export = Export {
         db: &connection.db,
         documents_path: connection.db.get_documents_path(),
-        options: FirestoreJsonOptions::new().with_metadata(args.with_metadata),
-        plain: args.plain,
+        options: FirestoreJsonOptions::new()
+            .with_encoding(if args.plain {
+                FirestoreJsonEncoding::Plain
+            } else {
+                FirestoreJsonEncoding::Tagged
+            })
+            .with_metadata(args.with_metadata),
         recursive: args.recursive,
         progress: if to_terminal {
             ProgressBar::hidden()
@@ -101,7 +106,6 @@ struct Export<'a> {
     db: &'a FirestoreDb,
     documents_path: &'a str,
     options: FirestoreJsonOptions,
-    plain: bool,
     recursive: bool,
     progress: ProgressBar,
 }
@@ -166,13 +170,8 @@ impl Export<'_> {
     }
 
     fn write_line<W: Write>(&self, writer: &mut W, document: &FirestoreDocument) -> FsqResult<()> {
-        let json = if self.plain {
-            FirestoreDb::serialize_doc_to_plain_json(self.documents_path, document, &self.options)
-                .into_inner()
-        } else {
-            FirestoreDb::serialize_doc_to_tagged_json(self.documents_path, document, &self.options)?
-                .into_inner()
-        };
+        let json =
+            FirestoreDb::serialize_doc_to_json(self.documents_path, document, &self.options)?;
         writeln!(writer, "{json}")?;
         Ok(())
     }

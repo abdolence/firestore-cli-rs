@@ -13,7 +13,7 @@ use firestore::gcloud_sdk::prost::Message;
 use firestore::gcloud_sdk::tonic::Code;
 use firestore::{
     FirestoreDb, FirestoreDocument, FirestoreFieldPathSegment, FirestoreResult,
-    FirestoreSimpleBatchWriter, FirestoreTaggedJson, FirestoreWritePrecondition,
+    FirestoreSimpleBatchWriter, FirestoreWritePrecondition,
 };
 use indicatif::ProgressBar;
 use std::convert::Infallible;
@@ -375,9 +375,9 @@ fn read_document(
     text: &[u8],
 ) -> Result<FirestoreDocument, ImportLine> {
     let failed = |cause| ImportLine { line, cause };
-    let tagged = serde_json::from_slice::<FirestoreTaggedJson>(text)
+    let json = serde_json::from_slice(text)
         .map_err(|error| failed(ImportLineCause::InvalidJson(error)))?;
-    FirestoreDb::deserialize_doc_from_tagged_json(documents_path, tagged)
+    FirestoreDb::deserialize_doc_from_json(documents_path, json)
         .map_err(|error| failed(error.into()))
 }
 

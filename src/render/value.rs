@@ -3,7 +3,7 @@ use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
 use firestore::gcloud_sdk::prost_types::Timestamp;
 use firestore::timestamp_utils::from_timestamp;
-use firestore::FirestoreDb;
+use firestore::{FirestoreDb, FirestoreJsonEncoding};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter, Write};
 
@@ -137,7 +137,12 @@ impl View<'_> {
 
     /// A value as plain JSON, in the firestore crate's plain encoding.
     pub fn json_value(&self, value: &Value) -> serde_json::Value {
-        FirestoreDb::serialize_value_to_plain_json(self.documents_path, value).into_inner()
+        FirestoreDb::serialize_value_to_json(
+            self.documents_path,
+            value,
+            FirestoreJsonEncoding::Plain,
+        )
+        .expect("the plain encoding has no value it refuses")
     }
 }
 
