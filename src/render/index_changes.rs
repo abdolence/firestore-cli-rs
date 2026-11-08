@@ -26,7 +26,6 @@ pub enum ChangeAction {
 }
 
 impl ChangeAction {
-    /// Whether the action writes to the database.
     fn writes(self) -> bool {
         matches!(
             self,
@@ -60,30 +59,16 @@ impl Display for ChangeAction {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChangeKind {
-    Index,
-    FieldOverride,
-    Ttl,
-    Unrecognised,
-}
-
-impl Display for ChangeKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Index => "index",
-            Self::FieldOverride => "field override",
-            Self::Ttl => "ttl",
-            Self::Unrecognised => "other",
-        })
-    }
-}
+const INDEX_KIND: &str = "index";
+const FIELD_OVERRIDE_KIND: &str = "field override";
+const TTL_KIND: &str = "ttl";
+const UNRECOGNISED_KIND: &str = "other";
 
 #[derive(Debug, Clone, PartialEq)]
 struct IndexChange {
     collection_group: FirestoreCollectionId,
     action: ChangeAction,
-    kind: ChangeKind,
+    kind: &'static str,
     definition: String,
     /// The ID of a live index, which `fsq index delete` takes.
     id: Option<FirestoreIndexId>,
@@ -97,113 +82,67 @@ pub struct IndexChanges(Vec<IndexChange>);
 impl IndexChanges {
     pub fn add_plan(&mut self, group: &FirestoreCollectionId, plan: &FirestoreIndexPlan) {
         use ChangeAction::*;
-        self.displayed(group, Create, ChangeKind::Index, &plan.create_indexes);
-        self.displayed(
-            group,
-            Update,
-            ChangeKind::FieldOverride,
-            &plan.update_fields,
-        );
-        self.displayed(group, Enable, ChangeKind::Ttl, &plan.enable_ttl);
-        self.listed_fields(group, Disable, ChangeKind::Ttl, &plan.disable_ttl);
+        self.displayed(group, Create, INDEX_KIND, &plan.create_indexes);
+        self.displayed(group, Update, FIELD_OVERRIDE_KIND, &plan.update_fields);
+        self.displayed(group, Enable, TTL_KIND, &plan.enable_ttl);
+        self.listed_fields(group, Disable, TTL_KIND, &plan.disable_ttl);
         self.listed_indexes(group, Delete, &plan.delete_indexes);
-        self.listed_fields(
-            group,
-            Revert,
-            ChangeKind::FieldOverride,
-            &plan.revert_fields,
-        );
+        self.listed_fields(group, Revert, FIELD_OVERRIDE_KIND, &plan.revert_fields);
         self.listed_fields(
             group,
             Reverting,
-            ChangeKind::FieldOverride,
+            FIELD_OVERRIDE_KIND,
             &plan.reverting_fields,
         );
-        self.displayed(group, Unchanged, ChangeKind::Index, &plan.unchanged);
-        self.displayed(group, Pending, ChangeKind::Index, &plan.pending);
-        self.displayed(group, NeedsRepair, ChangeKind::Index, &plan.needs_repair);
-        self.displayed(group, Unchanged, ChangeKind::Ttl, &plan.unchanged_ttl);
-        self.displayed(group, Pending, ChangeKind::Ttl, &plan.pending_ttl);
-        self.displayed(group, NeedsRepair, ChangeKind::Ttl, &plan.needs_repair_ttl);
+        self.displayed(group, Unchanged, INDEX_KIND, &plan.unchanged);
+        self.displayed(group, Pending, INDEX_KIND, &plan.pending);
+        self.displayed(group, NeedsRepair, INDEX_KIND, &plan.needs_repair);
+        self.displayed(group, Unchanged, TTL_KIND, &plan.unchanged_ttl);
+        self.displayed(group, Pending, TTL_KIND, &plan.pending_ttl);
+        self.displayed(group, NeedsRepair, TTL_KIND, &plan.needs_repair_ttl);
         self.listed_indexes(group, Undeclared, &plan.kept_undeclared_indexes);
         self.listed_fields(
             group,
             Undeclared,
-            ChangeKind::FieldOverride,
+            FIELD_OVERRIDE_KIND,
             &plan.kept_undeclared_fields,
         );
-        self.listed_fields(
-            group,
-            Undeclared,
-            ChangeKind::Ttl,
-            &plan.kept_undeclared_ttl,
-        );
-        self.displayed(
-            group,
-            Unrecognised,
-            ChangeKind::Unrecognised,
-            &plan.unrecognised,
-        );
+        self.listed_fields(group, Undeclared, TTL_KIND, &plan.kept_undeclared_ttl);
+        self.displayed(group, Unrecognised, UNRECOGNISED_KIND, &plan.unrecognised);
     }
 
     pub fn add_report(&mut self, group: &FirestoreCollectionId, report: &FirestoreIndexSyncReport) {
         use ChangeAction::*;
-        self.displayed(group, Create, ChangeKind::Index, &report.created_indexes);
-        self.displayed(
-            group,
-            Update,
-            ChangeKind::FieldOverride,
-            &report.updated_fields,
-        );
-        self.displayed(group, Enable, ChangeKind::Ttl, &report.enabled_ttl);
-        self.listed_fields(group, Disable, ChangeKind::Ttl, &report.disabled_ttl);
+        self.displayed(group, Create, INDEX_KIND, &report.created_indexes);
+        self.displayed(group, Update, FIELD_OVERRIDE_KIND, &report.updated_fields);
+        self.displayed(group, Enable, TTL_KIND, &report.enabled_ttl);
+        self.listed_fields(group, Disable, TTL_KIND, &report.disabled_ttl);
         self.listed_indexes(group, Delete, &report.deleted_indexes);
         if let Some(withheld) = &report.withheld_deletes {
             self.listed_indexes(group, Withheld, &withheld.indexes);
         }
-        self.listed_fields(
-            group,
-            Revert,
-            ChangeKind::FieldOverride,
-            &report.reverted_fields,
-        );
-        self.displayed(group, Unchanged, ChangeKind::Index, &report.unchanged);
-        self.displayed(group, Pending, ChangeKind::Index, &report.pending);
-        self.displayed(group, NeedsRepair, ChangeKind::Index, &report.needs_repair);
-        self.displayed(group, Unchanged, ChangeKind::Ttl, &report.unchanged_ttl);
-        self.displayed(group, Pending, ChangeKind::Ttl, &report.pending_ttl);
-        self.displayed(
-            group,
-            NeedsRepair,
-            ChangeKind::Ttl,
-            &report.needs_repair_ttl,
-        );
+        self.listed_fields(group, Revert, FIELD_OVERRIDE_KIND, &report.reverted_fields);
+        self.displayed(group, Unchanged, INDEX_KIND, &report.unchanged);
+        self.displayed(group, Pending, INDEX_KIND, &report.pending);
+        self.displayed(group, NeedsRepair, INDEX_KIND, &report.needs_repair);
+        self.displayed(group, Unchanged, TTL_KIND, &report.unchanged_ttl);
+        self.displayed(group, Pending, TTL_KIND, &report.pending_ttl);
+        self.displayed(group, NeedsRepair, TTL_KIND, &report.needs_repair_ttl);
         self.listed_indexes(group, Undeclared, &report.kept_undeclared_indexes);
         self.listed_fields(
             group,
             Undeclared,
-            ChangeKind::FieldOverride,
+            FIELD_OVERRIDE_KIND,
             &report.kept_undeclared_fields,
         );
-        self.listed_fields(
-            group,
-            Undeclared,
-            ChangeKind::Ttl,
-            &report.kept_undeclared_ttl,
-        );
-        self.displayed(
-            group,
-            Unrecognised,
-            ChangeKind::Unrecognised,
-            &report.unrecognised,
-        );
+        self.listed_fields(group, Undeclared, TTL_KIND, &report.kept_undeclared_ttl);
+        self.displayed(group, Unrecognised, UNRECOGNISED_KIND, &report.unrecognised);
     }
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    /// The rows that write to the database.
     pub fn written(&self) -> usize {
         self.0
             .iter()
@@ -215,7 +154,7 @@ impl IndexChanges {
         &mut self,
         group: &FirestoreCollectionId,
         action: ChangeAction,
-        kind: ChangeKind,
+        kind: &'static str,
         items: &[T],
     ) {
         self.0.extend(items.iter().map(|item| IndexChange {
@@ -236,7 +175,7 @@ impl IndexChanges {
         self.0.extend(indexes.iter().map(|listed| IndexChange {
             collection_group: group.clone(),
             action,
-            kind: ChangeKind::Index,
+            kind: INDEX_KIND,
             definition: listed.index.to_string(),
             id: Some(listed.id.clone()),
         }));
@@ -246,7 +185,7 @@ impl IndexChanges {
         &mut self,
         group: &FirestoreCollectionId,
         action: ChangeAction,
-        kind: ChangeKind,
+        kind: &'static str,
         fields: &[FirestoreListedField],
     ) {
         self.0.extend(fields.iter().map(|field| IndexChange {
