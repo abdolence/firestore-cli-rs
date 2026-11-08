@@ -10,6 +10,7 @@ mod index_changes;
 mod listings;
 mod output;
 mod plan;
+mod spinner;
 mod value;
 
 pub use footer::*;
@@ -17,6 +18,7 @@ pub use grid::*;
 pub use index_changes::*;
 pub use output::*;
 pub use plan::*;
+pub use spinner::*;
 
 use clap::ValueEnum;
 use console::Style;

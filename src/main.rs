@@ -18,10 +18,10 @@ mod walk;
 
 use args::{CliArgs, CliCommand, SqlArgs};
 use clap::Parser;
-use connection::Connection;
+use connection::{Connection, DatabaseId, ProjectId};
 use errors::{FileAccess, FsqError, FsqResult};
 use meta::Switch;
-use render::{ExpandedMode, Output};
+use render::{ExpandedMode, Output, OutputFormat};
 use session::{Interaction, Session, Settings};
 use std::io::{IsTerminal, Read};
 use std::process::ExitCode;
@@ -73,7 +73,7 @@ async fn run(args: CliArgs) -> FsqResult<()> {
                 ),
                 (None, None) => None,
             };
-            let connection = Connection::open(args.project, args.database).await?;
+            let connection = connect(args.project, args.database, args.format).await?;
             match script {
                 Some(script) => {
                     Session::new(connection, settings, Interaction::Script)
@@ -95,15 +95,15 @@ async fn run(args: CliArgs) -> FsqResult<()> {
             }
         }
         CliCommand::Export(export_args) => {
-            let connection = Connection::open(args.project, args.database).await?;
+            let connection = connect(args.project, args.database, args.format).await?;
             export::run(&connection, &export_args).await
         }
         CliCommand::Import(import_args) => {
-            let connection = Connection::open(args.project, args.database).await?;
+            let connection = connect(args.project, args.database, args.format).await?;
             import::run(&connection, &import_args).await
         }
         CliCommand::Describe(target) => {
-            let connection = Connection::open(args.project, args.database).await?;
+            let connection = connect(args.project, args.database, args.format).await?;
             Session::new(connection, settings, Interaction::Script)
                 .describe(&target)
                 .await
@@ -112,7 +112,7 @@ async fn run(args: CliArgs) -> FsqResult<()> {
             let options = &codegen_args.options;
             let snippet = match options.sample_rows() {
                 Some(rows) => {
-                    let connection = Connection::open(args.project, args.database).await?;
+                    let connection = connect(args.project, args.database, args.format).await?;
                     options
                         .sampled(&connection.db, &codegen_args.sql, rows)
                         .await?
@@ -123,10 +123,20 @@ async fn run(args: CliArgs) -> FsqResult<()> {
             output.print(&snippet)
         }
         CliCommand::Index(command) => {
-            let connection = Connection::open(args.project, args.database).await?;
+            let connection = connect(args.project, args.database, args.format).await?;
             Session::new(connection, settings, Interaction::Script)
                 .run_index(command)
                 .await
         }
     }
+}
+
+/// Connects to the database, with a spinner while Firestore answers.
+async fn connect(
+    project: Option<ProjectId>,
+    database: DatabaseId,
+    format: OutputFormat,
+) -> FsqResult<Connection> {
+    let _spinner = Output::detect().spinner("connecting", format);
+    Connection::open(project, database).await
 }

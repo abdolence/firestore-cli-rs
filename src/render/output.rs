@@ -1,4 +1,4 @@
-use super::Theme;
+use super::{OutputFormat, Spinner, SpinnerSurroundings, Theme};
 use crate::errors::{FsqError, FsqResult, PagerFailed};
 use console::{Key, Term};
 use std::ffi::OsString;
@@ -38,6 +38,17 @@ impl Output {
 
     pub fn height(&self) -> Option<usize> {
         self.is_terminal.then(|| usize::from(self.stdout.size().0))
+    }
+
+    /// A spinner for a wait on Firestore, drawn on stderr once the wait has lasted a moment.
+    pub fn spinner(&self, message: &str, format: OutputFormat) -> Spinner {
+        Spinner::start(
+            message,
+            SpinnerSurroundings {
+                stderr_is_terminal: self.stderr.is_term(),
+                json_to_pipe: !self.is_terminal && format != OutputFormat::Table,
+            },
+        )
     }
 
     pub fn print(&self, text: &str) -> FsqResult<()> {

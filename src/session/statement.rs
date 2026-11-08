@@ -1,13 +1,12 @@
-use super::{interruptible, Session};
+use super::Session;
 use crate::errors::{FsqError, FsqResult};
 use crate::meta::Switch;
-use crate::render::{animated, counted, Cell, DurationText, Footer, Grid, OutputFormat};
+use crate::render::{counted, Cell, DurationText, Footer, Grid, OutputFormat};
 use firestore::{
     FirestoreCollectionId, FirestoreDb, FirestoreExplainOptions, FirestoreIndexListing,
     FirestoreIndexState, FirestoreListedCompositeIndex, FirestoreSqlOptions, FirestoreSqlOutcome,
     FirestoreSqlParameters, FirestoreSqlStatement,
 };
-use indicatif::ProgressBar;
 use std::time::{Duration, Instant};
 
 /// How long `CREATE INDEX` and `ALTER COLLECTION` wait for their build before failing. A build
@@ -45,11 +44,11 @@ impl Session {
                 builder.explain_with_options(FirestoreExplainOptions::new().with_analyze(true));
         }
         let started = Instant::now();
-        let spinner = waits_for.map(|group| self.wait_spinner(group));
-        let outcome = interruptible(builder.run()).await;
-        if let Some(spinner) = &spinner {
-            spinner.finish_and_clear();
-        }
+        let message = match waits_for {
+            Some(group) => Self::build_wait_message(group),
+            None => "waiting for Firestore".to_string(),
+        };
+        let outcome = self.waiting(&message, builder.run()).await;
         match outcome {
             Err(FsqError::Interrupted) => {
                 self.explain_interruption(&statement, waits_for)?;
@@ -193,13 +192,8 @@ impl Session {
         )
     }
 
-    pub(super) fn wait_spinner(&self, group: &FirestoreCollectionId) -> ProgressBar {
-        animated(
-            ProgressBar::new_spinner().with_message(format!(
-                "waiting for the build on {group}, Ctrl-C stops waiting"
-            )),
-            "{spinner} {msg} {elapsed}",
-        )
+    pub(super) fn build_wait_message(group: &FirestoreCollectionId) -> String {
+        format!("waiting for the build on {group}, Ctrl-C stops waiting")
     }
 
     fn explain_interruption(

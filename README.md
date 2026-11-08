@@ -120,6 +120,9 @@ unset; an empty `PAGER` turns the pager off. When `LESS` is not set, fsq sets it
 does, so that `less` keeps the output on screen after `q`, does not page what fits on one screen and shows colours; a
 `LESS` that is set, even to nothing, is left as it is.
 
+A call that waits on Firestore for more than a moment shows a spinner on stderr, unless stderr is not a terminal or
+the results are JSON written to a pipe.
+
 ## Writes and index statements
 
 `INSERT`, `UPDATE` and `DELETE` run as typed, with no confirmation, and print how many documents they modified. The
