@@ -96,7 +96,7 @@ pub async fn run(mut session: Session) -> FsqResult<()> {
             .apply_to("Type \\? for help and \\q to quit; a statement ends with `;`.")
             .to_string(),
     )?;
-    session.load_collections().await;
+    session.start_loading_collections();
     let mut editor = Reedline::create()
         .with_validator(Box::new(StatementValidator))
         .with_highlighter(Box::new(SqlHighlighter))

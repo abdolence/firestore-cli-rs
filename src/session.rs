@@ -18,6 +18,7 @@ use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tokio::task::JoinHandle;
 
 pub struct Settings {
     pub format: OutputFormat,
@@ -46,6 +47,13 @@ pub struct Vocabulary {
     pub fields: BTreeSet<String>,
 }
 
+impl Vocabulary {
+    fn remember_collections(&mut self, collection_ids: &[FirestoreCollectionId]) {
+        self.collections
+            .extend(collection_ids.iter().map(ToString::to_string));
+    }
+}
+
 pub type SharedVocabulary = Arc<Mutex<Vocabulary>>;
 
 pub struct Session {
@@ -57,6 +65,8 @@ pub struct Session {
     interaction: Interaction,
     /// The text of the last `SELECT` that ran, for `\gen` without one.
     last_select: Option<String>,
+    /// The task that lists the root collections for completion while the prompt is already open.
+    collections_loading: Option<JoinHandle<()>>,
 }
 
 impl Session {
@@ -70,6 +80,7 @@ impl Session {
             output,
             interaction,
             last_select: None,
+            collections_loading: None,
         }
     }
 
@@ -124,12 +135,13 @@ impl Session {
                     Connection::open(Some(self.connection.project.clone()), database).await;
                 drop(connecting);
                 self.connection = connected?;
+                self.stop_loading_collections().await;
                 self.greet()?;
                 if let Ok(mut vocabulary) = self.vocabulary.lock() {
                     *vocabulary = Vocabulary::default();
                 }
                 if self.interaction == Interaction::Repl {
-                    self.load_collections().await;
+                    self.start_loading_collections();
                 }
             }
             MetaCommand::Timing(switch) => {
@@ -249,29 +261,37 @@ impl Session {
         }
     }
 
-    /// Lists the root collections for completion, quietly: completion works without them.
-    pub async fn load_collections(&self) {
-        match self
-            .connection
-            .db
-            .fluent()
-            .sql("SHOW COLLECTIONS")
-            .run()
-            .await
-        {
-            Ok(FirestoreSqlOutcome::Collections(collection_ids)) => {
-                self.remember_collections(&collection_ids)
+    /// Starts listing the root collections for completion in the background, quietly: Firestore
+    /// can take seconds to list them, and completion works without them until they arrive.
+    pub fn start_loading_collections(&mut self) {
+        let db = self.connection.db.clone();
+        let vocabulary = self.vocabulary.clone();
+        self.collections_loading = Some(tokio::spawn(async move {
+            match db.fluent().sql("SHOW COLLECTIONS").run().await {
+                Ok(FirestoreSqlOutcome::Collections(collection_ids)) => {
+                    if let Ok(mut vocabulary) = vocabulary.lock() {
+                        vocabulary.remember_collections(&collection_ids);
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => tracing::debug!(%error, "no collections listed for completion"),
             }
-            Ok(_) => {}
-            Err(error) => tracing::debug!(%error, "no collections listed for completion"),
+        }));
+    }
+
+    /// Ends the listing that [`Self::start_loading_collections`] started and waits until it has
+    /// stopped touching the vocabulary, so that a listing of the previous database cannot land
+    /// in the vocabulary of the next one.
+    async fn stop_loading_collections(&mut self) {
+        if let Some(loading) = self.collections_loading.take() {
+            loading.abort();
+            let _ = loading.await;
         }
     }
 
     fn remember_collections(&self, collection_ids: &[FirestoreCollectionId]) {
         if let Ok(mut vocabulary) = self.vocabulary.lock() {
-            vocabulary
-                .collections
-                .extend(collection_ids.iter().map(ToString::to_string));
+            vocabulary.remember_collections(collection_ids);
         }
     }
 
