@@ -7,7 +7,7 @@
 //! Firebase writes `ttl` on a field override only. Keys that neither Firebase nor `fsq` defines are
 //! refused rather than ignored, so that no setting is dropped without a word.
 
-use crate::errors::{IndexesFileProblem, InvalidFieldMode, UnreadKeys, UnsupportedSetting};
+use crate::errors::{IndexesFileProblem, InvalidFieldMode, UnsupportedSetting};
 use clap::ValueEnum;
 use firestore::{
     FirestoreCollectionId, FirestoreCompositeIndex, FirestoreFieldOverride,
@@ -25,7 +25,7 @@ use std::str::FromStr;
 const ALL_FIELDS_PATH: &str = "*";
 
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IndexesFile {
     #[serde(default)]
     pub indexes: Vec<FileIndex>,
@@ -36,7 +36,7 @@ pub struct IndexesFile {
 }
 
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileExtras {
     /// The TTL fields that have no field override to carry `ttl`.
     #[serde(default)]
@@ -44,14 +44,14 @@ pub struct FileExtras {
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileTtlField {
     pub collection_group: FirestoreCollectionId,
     pub field_path: String,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileIndex {
     pub collection_group: FirestoreCollectionId,
     pub query_scope: IndexScope,
@@ -92,7 +92,7 @@ pub enum FileApiScope {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileIndexField {
     pub field_path: String,
     #[serde(flatten)]
@@ -128,7 +128,7 @@ pub enum FileArrayConfig {
 
 /// A text or a geo search field: exactly one of the two specs is set.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileSearchConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_spec: Option<FileTextSpec>,
@@ -137,14 +137,14 @@ pub struct FileSearchConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileTextSpec {
     pub index_specs: Vec<FileTextIndexSpec>,
 }
 
 /// The one kind of text index Firestore has.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileTextIndexSpec {
     pub index_type: FileTextIndexType,
     pub match_type: FileTextMatchType,
@@ -163,13 +163,14 @@ pub enum FileTextMatchType {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileGeoSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geo_json_indexing_disabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileVectorConfig {
     pub dimension: u32,
     #[serde(default)]
@@ -178,10 +179,11 @@ pub struct FileVectorConfig {
 
 /// The `flat` key of a vector config, the one kind of vector index Firestore has.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FlatVectorIndex {}
 
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileIndexExtras {
     /// Firebase's own `unique` key is refused by the Firebase CLI, so fsq writes it here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -199,7 +201,7 @@ pub enum FileDensity {
 }
 
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileSearchOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_language: Option<String>,
@@ -208,7 +210,7 @@ pub struct FileSearchOptions {
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileFieldOverride {
     pub collection_group: FirestoreCollectionId,
     pub field_path: String,
@@ -219,7 +221,7 @@ pub struct FileFieldOverride {
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileOverrideIndex {
     #[serde(flatten)]
     pub mode: FileMode,
@@ -230,56 +232,7 @@ impl FromStr for IndexesFile {
     type Err = IndexesFileProblem;
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        let input: serde_json::Value = serde_json::from_str(text)?;
-        let file: Self = serde_json::from_value(input.clone())?;
-        let mut unread = Vec::new();
-        collect_unread_keys(
-            &input,
-            &serde_json::to_value(&file)?,
-            &mut String::new(),
-            &mut unread,
-        );
-        if unread.is_empty() {
-            Ok(file)
-        } else {
-            Err(IndexesFileProblem::UnreadKeys(UnreadKeys { keys: unread }))
-        }
-    }
-}
-
-/// The paths of the keys of `input` that `parsed`, the file read from it and written out again,
-/// does not have: the keys deserialising skipped. A key set to `null` is an absent key, which
-/// writing leaves out.
-fn collect_unread_keys(
-    input: &serde_json::Value,
-    parsed: &serde_json::Value,
-    path: &mut String,
-    unread: &mut Vec<String>,
-) {
-    match (input, parsed) {
-        (serde_json::Value::Object(input), serde_json::Value::Object(parsed)) => {
-            for (key, value) in input.iter().filter(|(_, value)| !value.is_null()) {
-                let parent_length = path.len();
-                if !path.is_empty() {
-                    path.push('.');
-                }
-                path.push_str(key);
-                match parsed.get(key) {
-                    Some(parsed) => collect_unread_keys(value, parsed, path, unread),
-                    None => unread.push(path.clone()),
-                }
-                path.truncate(parent_length);
-            }
-        }
-        (serde_json::Value::Array(input), serde_json::Value::Array(parsed)) => {
-            for (position, (value, parsed)) in input.iter().zip(parsed).enumerate() {
-                let parent_length = path.len();
-                path.push_str(&format!("[{position}]"));
-                collect_unread_keys(value, parsed, path, unread);
-                path.truncate(parent_length);
-            }
-        }
-        _ => {}
+        Ok(serde_json::from_str(text)?)
     }
 }
 
@@ -941,21 +894,27 @@ mod tests {
     }
 
     #[test]
-    fn a_key_the_file_format_does_not_define_is_refused_with_its_path() {
+    fn a_key_the_file_format_does_not_define_is_refused() {
         let problem = r#"{"indexes": [{"collectionGroup": "cities", "queryScope": "COLLECTION",
-            "sharded": true, "fields": []}],
-            "fieldOverrides": [{"collectionGroup": "cities", "fieldPath": "expires_at",
-            "retention": 3, "indexes": []}]}"#
+            "sharded": true, "fields": []}]}"#
             .parse::<IndexesFile>()
-            .expect_err("unread keys");
+            .expect_err("an unknown key");
 
-        assert!(
-            matches!(problem, IndexesFileProblem::UnreadKeys(UnreadKeys { keys }) if keys == ["indexes[0].sharded", "fieldOverrides[0].retention"])
-        );
+        assert!(matches!(problem, IndexesFileProblem::Json(error) if error.is_data()));
     }
 
     #[test]
-    fn explicit_defaults_and_nulls_are_not_unread_keys() {
+    fn a_misspelt_mode_of_a_field_is_refused() {
+        let problem = r#"{"indexes": [{"collectionGroup": "cities", "queryScope": "COLLECTION",
+            "fields": [{"fieldPath": "name", "ordr": "ASCENDING"}]}]}"#
+            .parse::<IndexesFile>()
+            .expect_err("an unknown key beside a flattened mode");
+
+        assert!(matches!(problem, IndexesFileProblem::Json(error) if error.is_data()));
+    }
+
+    #[test]
+    fn explicit_defaults_and_nulls_are_read() {
         let file: IndexesFile = r#"{"indexes": [{"collectionGroup": "cities",
             "queryScope": "COLLECTION", "fields": [{"fieldPath": "name", "order": "ASCENDING"}],
             "density": null, "fsq": {"unique": false}}], "fieldOverrides": []}"#

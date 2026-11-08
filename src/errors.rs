@@ -213,8 +213,6 @@ pub enum IndexesFileProblem {
     #[error(transparent)]
     FieldMode(InvalidFieldMode),
     #[error(transparent)]
-    UnreadKeys(UnreadKeys),
-    #[error(transparent)]
     UnsupportedSetting(UnsupportedSetting),
 }
 
@@ -230,12 +228,6 @@ pub struct UnsupportedSetting {
 #[error("the field `{field_path}` must set exactly one of order, arrayConfig, searchConfig and vectorConfig")]
 pub struct InvalidFieldMode {
     pub field_path: String,
-}
-
-#[derive(Debug, Error)]
-#[error("fsq does not read the keys {}", keys.join(", "))]
-pub struct UnreadKeys {
-    pub keys: Vec<String>,
 }
 
 #[derive(Debug, Error)]
