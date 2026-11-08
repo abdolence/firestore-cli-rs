@@ -109,10 +109,6 @@ struct Export<'a> {
 }
 
 impl Export<'_> {
-    /// Writes the documents of `source` as lines to `writer`, and returns how many.
-    ///
-    /// With `--recursive`, the subcollections of a document are read after the collection that
-    /// holds it, in the order their documents were written.
     async fn write<W: Write>(&self, source: ExportSource, mut writer: W) -> FsqResult<usize> {
         let mut subcollections = VecDeque::new();
         let first = match source {
@@ -226,7 +222,6 @@ impl Export<'_> {
     }
 }
 
-/// What an export reads documents from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ExportSource {
     Collection(CollectionPath),
@@ -258,7 +253,6 @@ impl TryFrom<&ExportArgs> for ExportSource {
     }
 }
 
-/// How a document becomes a line of the export.
 struct ExportFormat<'a> {
     converter: FirestoreJsonConverter<'a>,
     options: FirestoreJsonDocumentOptions,

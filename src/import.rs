@@ -146,7 +146,6 @@ pub async fn run(connection: &Connection, args: &ImportArgs) -> FsqResult<()> {
     }
 }
 
-/// A bar over the bytes of a file, and a spinner for stdin, whose size is not known.
 fn progress(size: Option<u64>) -> ProgressBar {
     let (bar, template) = match size {
         Some(size) => (
@@ -228,7 +227,6 @@ impl Display for Tally {
     }
 }
 
-/// The line a queued write came from, to name in a failure.
 struct Origin {
     line: usize,
     document: String,
@@ -239,7 +237,6 @@ struct QueuedWrite {
     write: Write,
 }
 
-/// The writes of the next request.
 #[derive(Default)]
 struct Batch {
     queued: Vec<QueuedWrite>,
@@ -359,7 +356,6 @@ impl Import<'_> {
     }
 }
 
-/// Reads the lines of an import file as documents.
 struct LineReader<'a> {
     converter: FirestoreJsonConverter<'a>,
 }
