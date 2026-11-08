@@ -588,7 +588,10 @@ impl From<&FirestoreIndexListing> for IndexesFile {
             }
         }
         field_overrides.sort_by(|left, right| left.order_key().cmp(&right.order_key()));
-        inherited_ttl.sort_by(|left, right| left.collection_group.cmp(&right.collection_group));
+        inherited_ttl.sort_by(|left, right| {
+            (&left.collection_group, &left.field_path)
+                .cmp(&(&right.collection_group, &right.field_path))
+        });
         Self {
             indexes,
             field_overrides,
@@ -1078,5 +1081,35 @@ mod tests {
             ]
         );
         assert_eq!(params[0].ttl_fields, ["expires_at", "placed_at"]);
+    }
+
+    #[test]
+    fn inherited_ttl_fields_of_a_group_export_in_field_path_order() {
+        let listing = FirestoreIndexListing {
+            indexes: Vec::new(),
+            fields: vec![
+                listed_field(
+                    "placed_at",
+                    Some(FirestoreFieldOverrideOutcome::Inherited),
+                    true,
+                ),
+                listed_field(
+                    "expires_at",
+                    Some(FirestoreFieldOverrideOutcome::Inherited),
+                    true,
+                ),
+            ],
+            unrecognised: Vec::new(),
+        };
+
+        let exported = written(&IndexesFile::from(&listing));
+
+        assert_eq!(
+            exported["fsq"]["ttl"],
+            serde_json::json!([
+                { "collectionGroup": "orders", "fieldPath": "expires_at" },
+                { "collectionGroup": "orders", "fieldPath": "placed_at" }
+            ])
+        );
     }
 }
