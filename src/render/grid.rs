@@ -338,7 +338,7 @@ enum CellLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::fixtures::{document, draft, dune, string, value, DOCUMENTS_PATH};
+    use crate::render::fixtures::{document, draft, dune, string, value, vector, DOCUMENTS_PATH};
     use crate::render::Theme;
     use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
     use firestore::gcloud_sdk::google::firestore::v1::{ArrayValue, MapValue};
@@ -503,6 +503,21 @@ mod tests {
     #[test]
     fn a_table_that_fits_the_terminal_is_drawn_at_its_natural_width() {
         assert_eq!(table_at(Some(400), true), table_at(None, true));
+    }
+
+    #[test]
+    fn a_vector_is_one_cell_of_its_component_count_in_a_table_and_its_components_when_expanded() {
+        let theme = Theme::new(false);
+        let mut grid = Grid::new(["embedding"]);
+        grid.push_row(vec![Some(Cell::Value(vector(&[0.4, 0.2, 0.9])))]);
+
+        let table = view(&theme, OutputFormat::Table, ExpandedMode::Off).grid(&grid);
+        let expanded = view(&theme, OutputFormat::Table, ExpandedMode::On).grid(&grid);
+
+        assert!(table.contains("vector(3)"), "{table}");
+        assert!(!table.contains("__type__"), "{table}");
+        assert!(expanded.contains("[0.4, 0.2, 0.9]"), "{expanded}");
+        assert!(!expanded.contains("__type__"), "{expanded}");
     }
 
     #[test]

@@ -10,7 +10,7 @@ use firestore::gcloud_sdk::google::firestore::v1::Value;
 use firestore::{
     FirestoreCollectionId, FirestoreCollectionSource, FirestoreDocument, FirestorePipeline,
     FirestorePipelineSource, FirestorePipelineStage, FirestoreResult, FirestoreSampleSize,
-    FirestoreSampleStage,
+    FirestoreSampleStage, FirestoreVector,
 };
 use futures::{StreamExt, TryStreamExt};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -241,8 +241,10 @@ impl Description {
             {
                 summary.example = Some(value.clone());
             }
-            if let (Some(ValueType::MapValue(map)), "map") = (&value.value_type, kind) {
-                self.add_fields(&path, &map.fields);
+            if let Some(ValueType::MapValue(map)) = &value.value_type {
+                if !FirestoreVector::is_vector(value) {
+                    self.add_fields(&path, &map.fields);
+                }
             }
         }
     }

@@ -3,7 +3,7 @@ use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
 use firestore::gcloud_sdk::prost_types::Timestamp;
 use firestore::timestamp_utils::from_timestamp;
-use firestore::{FirestoreDb, FirestoreJsonEncoding};
+use firestore::{FirestoreDb, FirestoreJsonEncoding, FirestoreVector};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter, Write};
 
@@ -24,6 +24,10 @@ impl View<'_> {
                 };
                 theme.nested.apply_to(summary).to_string()
             }
+            Some(ValueType::MapValue(_)) if FirestoreVector::is_vector(value) => theme
+                .nested
+                .apply_to(format!("vector({})", components_of(value).as_vec().len()))
+                .to_string(),
             Some(ValueType::MapValue(map)) => {
                 let keys = sorted_keys(&map.fields)
                     .into_iter()
@@ -72,6 +76,19 @@ impl View<'_> {
                 }
                 out.push_str(&closing);
                 out.push(']');
+            }
+            Some(ValueType::MapValue(_)) if FirestoreVector::is_vector(value) => {
+                let components: Vec<String> = components_of(value)
+                    .as_vec()
+                    .iter()
+                    .map(|component| format!("{component:?}"))
+                    .collect();
+                out.push_str(
+                    &theme
+                        .number
+                        .apply_to(format!("[{}]", components.join(", ")))
+                        .to_string(),
+                );
             }
             Some(ValueType::MapValue(map)) if map.fields.is_empty() => out.push_str("{}"),
             Some(ValueType::MapValue(map)) => {
@@ -180,19 +197,9 @@ pub(super) fn is_summarised(value: &Value) -> bool {
     }
 }
 
-/// The components of a vector, a map that Firestore stores as a marker and an array of doubles.
-/// The recognition is the firestore crate's, which is not public: the plain JSON encoding
-/// writes a vector as an array and every other map as an object.
-pub(super) fn vector_components(value: &Value) -> Option<Vec<serde_json::Value>> {
-    if !matches!(value.value_type, Some(ValueType::MapValue(_))) {
-        return None;
-    }
-    match FirestoreDb::serialize_value_to_json("", value, FirestoreJsonEncoding::Plain)
-        .expect("the plain encoding has no value it refuses")
-    {
-        serde_json::Value::Array(components) => Some(components),
-        _ => None,
-    }
+/// The components of a value for which `FirestoreVector::is_vector` holds.
+fn components_of(value: &Value) -> FirestoreVector {
+    FirestoreVector::from_value(value).expect("`is_vector` holds, so `from_value` reads the vector")
 }
 
 /// Names the type of a value as `\d` and the detail view list it. An expression value is one
@@ -209,7 +216,7 @@ pub fn type_name(value: &Value) -> &'static str {
         Some(ValueType::ReferenceValue(_)) => "reference",
         Some(ValueType::GeoPointValue(_)) => "geopoint",
         Some(ValueType::ArrayValue(_)) => "array",
-        Some(ValueType::MapValue(_)) if vector_components(value).is_some() => "vector",
+        Some(ValueType::MapValue(_)) if FirestoreVector::is_vector(value) => "vector",
         Some(ValueType::MapValue(_)) => "map",
         Some(
             ValueType::FieldReferenceValue(_)
