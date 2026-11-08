@@ -19,6 +19,18 @@ pub use plan::*;
 
 use clap::ValueEnum;
 use console::Style;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::time::Duration;
+
+/// `bar`, drawn with `template` and redrawn every 120 ms until it is finished.
+pub fn animated(bar: ProgressBar, template: &str) -> ProgressBar {
+    bar.set_style(
+        ProgressStyle::with_template(template)
+            .expect("the template is a literal with keys indicatif knows"),
+    );
+    bar.enable_steady_tick(Duration::from_millis(120));
+    bar
+}
 
 /// `count` and the noun that fits it: `1 row`, `2 rows`.
 pub fn counted<N>(count: N, singular: &str, plural: &str) -> String

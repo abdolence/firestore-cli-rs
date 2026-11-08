@@ -1,7 +1,7 @@
 use crate::connection::Connection;
 use crate::describe::CollectionPath;
 use crate::errors::{FileAccess, FsqError, FsqResult, InvalidCollectionPath};
-use crate::render::{counted, Output};
+use crate::render::{animated, counted, Output};
 use clap::ArgGroup;
 use firestore::{
     FirestoreCollectionId, FirestoreDb, FirestoreDocument, FirestoreJsonConverter,
@@ -9,12 +9,11 @@ use firestore::{
 };
 use futures::stream::BoxStream;
 use futures::StreamExt;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::ProgressBar;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufWriter, IsTerminal, Write};
 use std::path::PathBuf;
-use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 #[command(group(ArgGroup::new("source").required(true).args(["collection", "sql"])))]
@@ -75,7 +74,10 @@ pub async fn run(connection: &Connection, args: &ExportArgs) -> FsqResult<()> {
         progress: if to_terminal {
             ProgressBar::hidden()
         } else {
-            counting_spinner()
+            animated(
+                ProgressBar::new_spinner(),
+                "{spinner} {pos} documents {elapsed}",
+            )
         },
     };
     let exported = match &args.output {
@@ -95,16 +97,6 @@ pub async fn run(connection: &Connection, args: &ExportArgs) -> FsqResult<()> {
         "Exported {}.",
         counted(exported?, "document", "documents")
     ))
-}
-
-fn counting_spinner() -> ProgressBar {
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        ProgressStyle::with_template("{spinner} {pos} documents {elapsed}")
-            .expect("the template is a literal with keys indicatif knows"),
-    );
-    spinner.enable_steady_tick(Duration::from_millis(120));
-    spinner
 }
 
 type DocumentStream<'b> = BoxStream<'b, FirestoreResult<FirestoreDocument>>;

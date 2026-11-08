@@ -1,13 +1,13 @@
 use super::{interruptible, Session};
 use crate::errors::{FsqError, FsqResult};
 use crate::meta::Switch;
-use crate::render::{counted, Cell, DurationText, Footer, Grid, OutputFormat};
+use crate::render::{animated, counted, Cell, DurationText, Footer, Grid, OutputFormat};
 use firestore::{
     FirestoreCollectionId, FirestoreExplainOptions, FirestoreIndexListing, FirestoreIndexState,
     FirestoreListedCompositeIndex, FirestoreSqlOptions, FirestoreSqlOutcome,
     FirestoreSqlParameters, FirestoreSqlStatement,
 };
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::ProgressBar;
 use std::time::{Duration, Instant};
 
 /// How long `CREATE INDEX` and `ALTER COLLECTION` wait for their build before failing. A build
@@ -187,15 +187,12 @@ impl Session {
     }
 
     pub(super) fn wait_spinner(&self, group: &FirestoreCollectionId) -> ProgressBar {
-        let spinner = ProgressBar::new_spinner().with_message(format!(
-            "waiting for the build on {group}, Ctrl-C stops waiting"
-        ));
-        spinner.set_style(
-            ProgressStyle::with_template("{spinner} {msg} {elapsed}")
-                .expect("the template is a literal with keys indicatif knows"),
-        );
-        spinner.enable_steady_tick(Duration::from_millis(120));
-        spinner
+        animated(
+            ProgressBar::new_spinner().with_message(format!(
+                "waiting for the build on {group}, Ctrl-C stops waiting"
+            )),
+            "{spinner} {msg} {elapsed}",
+        )
     }
 
     fn explain_interruption(

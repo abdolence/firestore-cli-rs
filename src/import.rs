@@ -3,7 +3,7 @@ use crate::errors::{
     FileAccess, FsqError, FsqResult, ImportLine, ImportLineCause, ImportWrite, InputsFailed,
     InvalidDocument,
 };
-use crate::render::{counted, Output};
+use crate::render::{animated, counted, Output};
 use clap::ValueEnum;
 use firestore::errors::FirestoreError;
 use firestore::gcloud_sdk::google::firestore::v1::{write::Operation, DocumentMask, Write};
@@ -12,14 +12,13 @@ use firestore::{
     FirestoreDocument, FirestoreFieldPathSegment, FirestoreJsonConverter,
     FirestoreSimpleBatchWriter, FirestoreTaggedJson, FirestoreWritePrecondition,
 };
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::ProgressBar;
 use std::convert::Infallible;
 use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::time::Duration;
 
 /// How many writes one request carries: the most a Firestore commit takes.
 const WRITES_PER_BATCH: usize = 500;
@@ -153,12 +152,8 @@ fn progress(size: Option<u64>) -> ProgressBar {
         ),
         None => (ProgressBar::new_spinner(), "{spinner} {msg} {elapsed}"),
     };
-    bar.set_style(
-        ProgressStyle::with_template(template)
-            .expect("the template is a literal with keys indicatif knows"),
-    );
+    let bar = animated(bar, template);
     bar.set_message(Tally::default().to_string());
-    bar.enable_steady_tick(Duration::from_millis(120));
     bar
 }
 
