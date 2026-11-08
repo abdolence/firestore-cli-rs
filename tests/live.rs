@@ -279,8 +279,9 @@ fn import_counts_a_repeated_document_by_its_conflict_policy() {
     );
 }
 
+// The `index_rights_` prefix keeps a test out of CI, whose account has no Firestore index rights.
 #[test]
-fn sync_declares_the_indexes_of_every_group_of_the_file() {
+fn index_rights_sync_declares_the_indexes_of_every_group_of_the_file() {
     delete_stale_indexes();
     let groups = [unique_name("fsq-live-sync"), unique_name("fsq-live-sync")];
     let file: PathBuf = std::env::temp_dir().join(format!("{}.json", groups[0]));

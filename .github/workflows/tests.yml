@@ -41,8 +41,9 @@ jobs:
       - name: 'Run tests without access to GCP'
         run: cargo test
         if: github.ref != 'refs/heads/master'
+      # Live tests named `index_rights_*` need Firestore index rights, which the CI account does not have.
       - name: 'Run all tests'
-        run: cargo test --features "ci-live"
+        run: cargo test --features "ci-live" -- --skip index_rights_
         if: github.ref == 'refs/heads/master'
       - name: 'Checking the minimum supported Rust version'
         uses: dtolnay/rust-toolchain@1.91.0
