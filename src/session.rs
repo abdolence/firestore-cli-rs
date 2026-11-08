@@ -122,7 +122,9 @@ impl Session {
     async fn run_meta(&mut self, command: MetaCommand) -> FsqResult<Flow> {
         match command {
             MetaCommand::Quit => return Ok(Flow::Quit),
-            MetaCommand::Help => self.output.print(&meta_help())?,
+            MetaCommand::Help => self
+                .output
+                .print(&meta_help(&self.theme, self.output.width()))?,
             MetaCommand::ListCollections(None) => self.run_statement("SHOW COLLECTIONS").await?,
             MetaCommand::ListCollections(Some(target)) => self.list_collection_tree(target).await?,
             MetaCommand::Describe(target) => self.describe(&target).await?,

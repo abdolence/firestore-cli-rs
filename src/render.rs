@@ -15,6 +15,7 @@ mod spinner;
 mod value;
 
 pub use cut::cut_middle;
+pub use fit::TableText;
 pub use footer::*;
 pub use grid::*;
 pub use index_changes::*;

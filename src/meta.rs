@@ -3,7 +3,7 @@ use crate::collection_tree::CollectionTreeTarget;
 use crate::connection::DatabaseId;
 use crate::describe::DescribeTarget;
 use crate::errors::{FsqError, FsqResult, UnclosedQuote, UnknownMetaCommand};
-use crate::render::ExpandedMode;
+use crate::render::{ExpandedMode, TableText, Theme};
 use clap::{Args, Command, FromArgMatches};
 use std::str::FromStr;
 
@@ -101,21 +101,25 @@ pub const META_COMMANDS: &[MetaCommandHelp] = &[
     },
 ];
 
-const QUOTING_NOTE: &str = "The arguments of \\l, \\d and \\gen are split as a shell splits them: quote the SELECT, and a value that holds spaces or quotes, as in\n  \\gen 'SELECT title FROM books WHERE genre = @genre' --param 'genre=\"science fiction\"'\n";
+const QUOTING_NOTE: &str = "The arguments of \\l, \\d and \\gen are split as a shell splits them:\nquote the SELECT, and a value that holds spaces or quotes, as in\n  \\gen 'SELECT title FROM books WHERE genre = @genre' --param 'genre=\"science fiction\"'\n";
 
-/// The text of `\?`: a line per meta-command, with the summaries in one column, and a note on
-/// quoting.
-pub fn meta_help() -> String {
-    let width = META_COMMANDS
-        .iter()
-        .map(|command| command.usage.len())
-        .max()
-        .unwrap_or_default();
-    let rows: String = META_COMMANDS
-        .iter()
-        .map(|command| format!("{:<width$}  {}\n", command.usage, command.summary))
-        .collect();
-    rows + "\n" + QUOTING_NOTE
+/// The text of `\?`: a table of the meta-commands and what they do, and a note on quoting. In a
+/// terminal of `width` columns the cells wrap at their spaces to fit it.
+pub fn meta_help(theme: &Theme, width: Option<usize>) -> String {
+    let cells = TableText::new(
+        ["command", "description"]
+            .map(|header| theme.header.apply_to(header).to_string())
+            .to_vec(),
+        META_COMMANDS
+            .iter()
+            .map(|command| vec![command.usage.to_string(), command.summary.to_string()])
+            .collect(),
+    );
+    let table = match width {
+        Some(width) => cells.into_wrapped_table(width),
+        None => cells.into_table(),
+    };
+    format!("{table}\n\n{QUOTING_NOTE}")
 }
 
 impl FromStr for MetaCommand {
@@ -250,6 +254,22 @@ mod tests {
 
     fn parsed(line: &str) -> MetaCommand {
         line.parse().expect(line)
+    }
+
+    #[test]
+    fn the_help_fits_the_terminal_without_cutting_any_text() {
+        for width in [80, 120] {
+            let help = meta_help(&Theme::new(false), Some(width));
+            let table: Vec<_> = help.lines().take_while(|line| !line.is_empty()).collect();
+
+            assert!(table.iter().all(|line| line.chars().count() <= width));
+            assert!(!help.contains('…'));
+            for command in META_COMMANDS {
+                for word in command.summary.split_whitespace() {
+                    assert!(help.contains(word), "{width}: `{word}` is missing");
+                }
+            }
+        }
     }
 
     #[test]

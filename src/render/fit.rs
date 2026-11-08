@@ -46,10 +46,22 @@ impl TableText {
     }
 
     pub fn into_table(self) -> Table {
+        self.table(ContentArrangement::Disabled)
+    }
+
+    /// The table within `width` columns, wrapping a cell at its spaces where [`Self::fit_to`]
+    /// would cut it, for text that has to stay whole.
+    pub fn into_wrapped_table(self, width: usize) -> Table {
+        let mut table = self.table(ContentArrangement::Dynamic);
+        table.set_width(u16::try_from(width).unwrap_or(u16::MAX));
+        table
+    }
+
+    fn table(self, arrangement: ContentArrangement) -> Table {
         let mut table = Table::new();
         table
             .load_style(presets::UTF8_FULL_CONDENSED.with_rounded_corners())
-            .set_content_arrangement(ContentArrangement::Disabled)
+            .set_content_arrangement(arrangement)
             .set_header(self.header.into_iter().map(TableCell::new));
         for row in self.rows {
             table.add_row(row.into_iter().map(TableCell::new));
