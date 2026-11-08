@@ -4,6 +4,8 @@ mod describe;
 mod errors;
 mod export;
 mod import;
+mod index_command;
+mod index_file;
 mod meta;
 mod render;
 mod repl;
@@ -101,6 +103,12 @@ async fn run(args: CliArgs) -> FsqResult<()> {
             let connection = Connection::open(args.project, args.database).await?;
             Session::new(connection, settings, Interaction::Script)
                 .describe(&target)
+                .await
+        }
+        CliCommand::Index(command) => {
+            let connection = Connection::open(args.project, args.database).await?;
+            Session::new(connection, settings, Interaction::Script)
+                .run_index(command)
                 .await
         }
     }

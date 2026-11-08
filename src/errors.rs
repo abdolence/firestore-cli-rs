@@ -37,6 +37,14 @@ pub enum FsqError {
     #[error(transparent)]
     Json(#[from] serde_json::Error),
     #[error(transparent)]
+    ReadIndexesFile(ReadIndexesFile),
+    #[error(transparent)]
+    WriteIndexesFile(WriteIndexesFile),
+    #[error(transparent)]
+    InvalidIndexesFile(InvalidIndexesFile),
+    #[error(transparent)]
+    InvalidIndexField(InvalidIndexField),
+    #[error(transparent)]
     PagerFailed(PagerFailed),
     #[error("interrupted")]
     Interrupted,
@@ -102,6 +110,14 @@ pub struct OpenFile {
     pub source: std::io::Error,
 }
 
+#[derive(Debug, Error)]
+#[error("cannot read {}: {source}", path.display())]
+pub struct ReadIndexesFile {
+    pub path: PathBuf,
+    #[source]
+    pub source: std::io::Error,
+}
+
 /// A line of an import file that is not a document.
 #[derive(Debug, Error)]
 #[error("line {line}: {cause}")]
@@ -138,6 +154,55 @@ pub struct ImportWrite {
     pub document: String,
     pub code: Code,
     pub message: String,
+}
+
+#[derive(Debug, Error)]
+#[error("cannot write {}: {source}", path.display())]
+pub struct WriteIndexesFile {
+    pub path: PathBuf,
+    #[source]
+    pub source: std::io::Error,
+}
+
+#[derive(Debug, Error)]
+#[error("{} is not an indexes file: {source}", path.display())]
+pub struct InvalidIndexesFile {
+    pub path: PathBuf,
+    #[source]
+    pub source: IndexesFileProblem,
+}
+
+/// What is wrong with the text of an indexes file.
+#[derive(Debug, Error)]
+pub enum IndexesFileProblem {
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    CollectionGroup(#[from] FirestoreError),
+    #[error(transparent)]
+    FieldMode(InvalidFieldMode),
+    #[error(transparent)]
+    UnreadKeys(UnreadKeys),
+}
+
+#[derive(Debug, Error)]
+#[error("the field `{field_path}` must set exactly one of order, arrayConfig, vectorConfig and fsq.mode")]
+pub struct InvalidFieldMode {
+    pub field_path: String,
+}
+
+#[derive(Debug, Error)]
+#[error("fsq does not read the keys {}", keys.join(", "))]
+pub struct UnreadKeys {
+    pub keys: Vec<String>,
+}
+
+#[derive(Debug, Error)]
+#[error(
+    "`{value}` is not an index field: write it as <field>:asc, <field>:desc or <field>:contains"
+)]
+pub struct InvalidIndexField {
+    pub value: String,
 }
 
 #[derive(Debug, Error)]

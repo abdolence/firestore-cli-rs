@@ -785,6 +785,7 @@ dependencies = [
  "indicatif",
  "nu-ansi-term",
  "reedline",
+ "serde",
  "serde_json",
  "sqlparser",
  "thiserror",

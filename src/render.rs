@@ -5,6 +5,7 @@
 pub mod fixtures;
 mod footer;
 mod grid;
+mod index_changes;
 mod listings;
 mod output;
 mod plan;
@@ -12,6 +13,7 @@ mod value;
 
 pub use footer::*;
 pub use grid::*;
+pub use index_changes::*;
 pub use output::*;
 pub use plan::*;
 

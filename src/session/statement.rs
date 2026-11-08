@@ -3,15 +3,16 @@ use crate::errors::{FsqError, FsqResult};
 use crate::meta::Switch;
 use crate::render::{counted, Cell, DurationText, Footer, Grid, OutputFormat};
 use firestore::{
-    FirestoreCollectionId, FirestoreExplainOptions, FirestoreIndexState, FirestoreSqlOptions,
-    FirestoreSqlOutcome, FirestoreSqlParameters, FirestoreSqlStatement,
+    FirestoreCollectionId, FirestoreExplainOptions, FirestoreIndexListing, FirestoreIndexState,
+    FirestoreListedCompositeIndex, FirestoreSqlOptions, FirestoreSqlOutcome,
+    FirestoreSqlParameters, FirestoreSqlStatement,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::{Duration, Instant};
 
 /// How long `CREATE INDEX` and `ALTER COLLECTION` wait for their build before failing. A build
 /// takes minutes even on an empty collection; Ctrl-C stops the wait sooner.
-const INDEX_WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+pub(super) const INDEX_WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// The collection group whose index build a statement starts, for `\wait` to wait on.
 fn waited_collection_group(statement: &FirestoreSqlStatement) -> Option<&FirestoreCollectionId> {
@@ -99,41 +100,67 @@ impl Session {
                 };
                 self.print_grids(&[("", &grid)], &footer)
             }
-            FirestoreSqlOutcome::Indexes(listing) => {
-                let footer = Footer {
-                    counted: counted(listing.indexes.len(), "index", "indexes"),
-                    elapsed: started.elapsed(),
-                    notes: Vec::new(),
-                };
-                let grids = [
-                    ("indexes", &Grid::indexes(&listing.indexes)),
-                    ("fields", &Grid::fields(&listing.fields)),
-                    ("unrecognised", &Grid::unrecognised(&listing.unrecognised)),
-                ];
-                self.print_grids(&grids, &footer)
+            FirestoreSqlOutcome::Indexes(listing) => self.show_indexes(&listing, started),
+            FirestoreSqlOutcome::IndexCreated(created) => self.show_index_created(
+                &created,
+                &format!("SHOW INDEXES FROM {}", created.collection_group),
+                started,
+            ),
+            FirestoreSqlOutcome::IndexDropped(dropped) => {
+                self.show_index_dropped(dropped.as_ref(), started)
             }
-            FirestoreSqlOutcome::IndexCreated(created) => {
-                let message = match created.state {
-                    FirestoreIndexState::Creating => format!(
-                        "Index created and building; SHOW INDEXES FROM {} shows when it is READY",
-                        created.collection_group
-                    ),
-                    _ => "Index created".to_string(),
-                };
-                self.show_done(&message, &Grid::indexes([&created]), started)
+            FirestoreSqlOutcome::FieldUpdated(field) => {
+                self.show_done("Field updated", &Grid::fields([&field]), started)
             }
-            FirestoreSqlOutcome::IndexDropped(Some(dropped)) => {
-                self.show_done("Index dropped", &Grid::indexes([&dropped]), started)
+        }
+    }
+
+    pub(super) fn show_indexes(
+        &self,
+        listing: &FirestoreIndexListing,
+        started: Instant,
+    ) -> FsqResult<()> {
+        let footer = Footer {
+            counted: counted(listing.indexes.len(), "index", "indexes"),
+            elapsed: started.elapsed(),
+            notes: Vec::new(),
+        };
+        let grids = [
+            ("indexes", &Grid::indexes(&listing.indexes)),
+            ("fields", &Grid::fields(&listing.fields)),
+            ("unrecognised", &Grid::unrecognised(&listing.unrecognised)),
+        ];
+        self.print_grids(&grids, &footer)
+    }
+
+    pub(super) fn show_index_created(
+        &self,
+        created: &FirestoreListedCompositeIndex,
+        listing_command: &str,
+        started: Instant,
+    ) -> FsqResult<()> {
+        let message = match created.state {
+            FirestoreIndexState::Creating => {
+                format!("Index created and building; {listing_command} shows when it is READY")
             }
-            FirestoreSqlOutcome::IndexDropped(None) => {
+            _ => "Index created".to_string(),
+        };
+        self.show_done(&message, &Grid::indexes([created]), started)
+    }
+
+    pub(super) fn show_index_dropped(
+        &self,
+        dropped: Option<&FirestoreListedCompositeIndex>,
+        started: Instant,
+    ) -> FsqResult<()> {
+        match dropped {
+            Some(dropped) => self.show_done("Index dropped", &Grid::indexes([dropped]), started),
+            None => {
                 self.output.notice("no such index, nothing dropped")?;
                 match self.settings.format {
                     OutputFormat::Json => self.output.print(&self.view().grid(&Grid::indexes([]))),
                     OutputFormat::Table | OutputFormat::Jsonl => Ok(()),
                 }
-            }
-            FirestoreSqlOutcome::FieldUpdated(field) => {
-                self.show_done("Field updated", &Grid::fields([&field]), started)
             }
         }
     }
@@ -159,7 +186,7 @@ impl Session {
         )
     }
 
-    fn wait_spinner(&self, group: &FirestoreCollectionId) -> ProgressBar {
+    pub(super) fn wait_spinner(&self, group: &FirestoreCollectionId) -> ProgressBar {
         let spinner = ProgressBar::new_spinner().with_message(format!(
             "waiting for the build on {group}, Ctrl-C stops waiting"
         ));
