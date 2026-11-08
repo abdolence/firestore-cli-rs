@@ -55,6 +55,19 @@ pub enum EditionStatus {
     Unreadable(FirestoreError),
 }
 
+impl EditionStatus {
+    /// The edition Firestore reported. A database that does not exist cannot be connected to, and
+    /// fails here; any other failure to read the edition, a missing permission for one, leaves it
+    /// unreadable and the connection usable.
+    fn of(outcome: FirestoreResult<FirestoreDatabaseEdition>) -> FsqResult<Self> {
+        match outcome {
+            Ok(edition) => Ok(Self::Known(edition)),
+            Err(error @ FirestoreError::DataNotFoundError(_)) => Err(error.into()),
+            Err(error) => Ok(Self::Unreadable(error)),
+        }
+    }
+}
+
 impl Display for EditionStatus {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -131,10 +144,7 @@ impl Connection {
         .with_database_id(database.as_str().to_string());
         let project = ProjectId(options.google_project_id.clone());
         let db = FirestoreDb::with_options(options).await?;
-        let edition = match db.read_database_edition().await {
-            Ok(edition) => EditionStatus::Known(edition),
-            Err(error) => EditionStatus::Unreadable(error),
-        };
+        let edition = EditionStatus::of(db.read_database_edition().await)?;
         let pipelines = PipelineProbe::run(&db).await;
         Ok(Self {
             db,
@@ -154,6 +164,24 @@ impl Connection {
 mod tests {
     use super::*;
     use firestore::gcloud_sdk::tonic::{Code, Status};
+
+    #[test]
+    fn a_database_that_does_not_exist_is_no_connection_and_an_unreadable_edition_is_one() {
+        let answered = |code: Code| Err(FirestoreError::from(Status::new(code, "answer")));
+
+        assert!(matches!(
+            EditionStatus::of(answered(Code::NotFound)),
+            Err(FsqError::Firestore(FirestoreError::DataNotFoundError(_)))
+        ));
+        assert!(matches!(
+            EditionStatus::of(answered(Code::PermissionDenied)),
+            Ok(EditionStatus::Unreadable(_))
+        ));
+        assert!(matches!(
+            EditionStatus::of(Ok(FirestoreDatabaseEdition::Standard)),
+            Ok(EditionStatus::Known(FirestoreDatabaseEdition::Standard))
+        ));
+    }
 
     #[test]
     fn a_refused_pipeline_probe_is_the_edition_refusal_and_no_other_failure() {
