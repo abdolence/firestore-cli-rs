@@ -104,7 +104,7 @@
         $exitCode = $LASTEXITCODE
         $ErrorActionPreference = 'Stop'
         if ($exitCode -ne 0) {
-            throw "$asset does not run on this system: $(($output | ForEach-Object { "$_" }) -join "`n")`nNothing was installed. Build from source with 'cargo install firestore-cli'."
+            throw "$asset does not run on this system: $(($output | ForEach-Object { "$_" }) -join "`n")`nNothing was installed. Build from source with 'cargo install firestore-cli --locked'."
         }
         $banner = "$($output | Select-Object -First 1)"
 

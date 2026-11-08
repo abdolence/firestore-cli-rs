@@ -87,7 +87,7 @@ The Linux x86_64 and aarch64 archives need glibc; the Linux arm archive is stati
 ### Cargo
 
 ```sh
-cargo install firestore-cli
+cargo install firestore-cli --locked
 ```
 
 The crate is `firestore-cli` and the binary it installs is `fsq`.

@@ -126,11 +126,11 @@ main() {
     machine=$(detect_machine)
     asset=$(asset_for "$os" "$machine") ||
         die "unsupported platform $os $machine. Supported: macOS (arm64, x86_64), Linux (x86_64, aarch64, armv6l, armv7l), FreeBSD (x86_64).
-On Windows use install.ps1. Other platforms: build from source with 'cargo install firestore-cli', or look for an archive at https://github.com/$REPO/releases"
+On Windows use install.ps1. Other platforms: build from source with 'cargo install firestore-cli --locked', or look for an archive at https://github.com/$REPO/releases"
     case "$asset" in
         fsq-Linux-x86_64.tar.gz | fsq-Linux-aarch64.tar.gz)
             if is_musl; then
-                die "this system uses musl libc and the $os $machine archives need glibc. Build from source with 'cargo install firestore-cli'"
+                die "this system uses musl libc and the $os $machine archives need glibc. Build from source with 'cargo install firestore-cli --locked'"
             fi
             ;;
     esac
@@ -185,7 +185,7 @@ On Windows use install.ps1. Other platforms: build from source with 'cargo insta
     if ! banner=$("$target.new" --help 2>&1); then
         rm -f "$target.new"
         die "$asset does not run on this system: $banner
-Nothing was installed. Build from source with 'cargo install firestore-cli'"
+Nothing was installed. Build from source with 'cargo install firestore-cli --locked'"
     fi
     mv -f "$target.new" "$target"
 
