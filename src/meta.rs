@@ -1,10 +1,11 @@
+use crate::codegen::GenerateCommand;
 use crate::connection::DatabaseId;
 use crate::describe::{CollectionPath, DescribeTarget, SampleSize};
 use crate::errors::{FsqError, FsqResult, UnknownMetaCommand};
 use crate::render::ExpandedMode;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MetaCommand {
     Quit,
     Help,
@@ -17,6 +18,7 @@ pub enum MetaCommand {
     Timing(Option<Switch>),
     /// Without an argument, toggles.
     Wait(Option<Switch>),
+    Generate(GenerateCommand),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +85,10 @@ pub const META_COMMANDS: &[MetaCommandHelp] = &[
         summary: "wait for CREATE INDEX and ALTER COLLECTION to finish",
     },
     MetaCommandHelp {
+        usage: "\\gen [SELECT] [--param name=value] [--sample N] [--offline]",
+        summary: "fluent Rust code of a SELECT, or of the last one run",
+    },
+    MetaCommandHelp {
         usage: "\\?",
         summary: "this help",
     },
@@ -146,6 +152,7 @@ impl FromStr for MetaCommand {
                 "on or off",
                 Switch::from_argument,
             )?),
+            "\\gen" => Self::Generate(line.trim_start().trim_start_matches("\\gen").parse()?),
             other => {
                 return Err(FsqError::UnknownMetaCommand(UnknownMetaCommand {
                     command: other.to_string(),

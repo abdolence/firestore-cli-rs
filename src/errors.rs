@@ -25,6 +25,10 @@ pub enum FsqError {
     #[error(transparent)]
     MissingMetaArgument(MissingMetaArgument),
     #[error(transparent)]
+    InvalidParameter(InvalidParameter),
+    #[error("no SELECT has run yet: give \\gen one")]
+    NoSelectToGenerate,
+    #[error(transparent)]
     FileAccessFailed(FileAccessFailed),
     #[error("export needs a collection or --sql")]
     ExportWithoutSource,
@@ -88,6 +92,25 @@ pub struct InvalidMetaArgument {
 pub struct MissingMetaArgument {
     pub command: &'static str,
     pub expected: &'static str,
+}
+
+#[derive(Debug, Error)]
+#[error("`{argument}` is not a parameter: {problem}")]
+pub struct InvalidParameter {
+    pub argument: String,
+    #[source]
+    pub problem: ParameterProblem,
+}
+
+/// What is wrong with a `--param`.
+#[derive(Debug, Error)]
+pub enum ParameterProblem {
+    #[error("write it as name=value")]
+    MissingValue,
+    #[error("the name is empty")]
+    EmptyName,
+    #[error("the value is not a JSON literal, and a string needs its quotes: {0}")]
+    NotJson(#[source] serde_json::Error),
 }
 
 #[derive(Debug, Error)]

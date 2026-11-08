@@ -2,6 +2,7 @@ mod indexes;
 mod rows;
 mod statement;
 
+use crate::codegen::{highlighted, CodegenOptions};
 use crate::connection::{Connection, EditionStatus};
 use crate::describe::{DescribeTarget, Description};
 use crate::errors::{FsqError, FsqResult};
@@ -53,6 +54,8 @@ pub struct Session {
     pub output: Output,
     pub theme: Theme,
     interaction: Interaction,
+    /// The text of the last `SELECT` that ran, for `\gen` without one.
+    last_select: Option<String>,
 }
 
 impl Session {
@@ -65,6 +68,7 @@ impl Session {
             theme: output.theme(),
             output,
             interaction,
+            last_select: None,
         }
     }
 
@@ -128,6 +132,10 @@ impl Session {
                 self.output
                     .notice(&format!("Timing is {}.", self.settings.timing))?;
             }
+            MetaCommand::Generate(generate) => {
+                self.codegen(generate.sql.as_deref(), &generate.options)
+                    .await?
+            }
             MetaCommand::Wait(switch) => {
                 self.settings.wait = switch.unwrap_or(self.settings.wait.toggled());
                 self.output.notice(&format!(
@@ -155,6 +163,18 @@ impl Session {
             notes: vec![FooterNote::Sampled(Sample { documents })],
         };
         self.print_grids(&[("", &grid)], &footer)
+    }
+
+    /// Prints the fluent Rust code of `sql`, or of the last `SELECT` that ran when it is `None`.
+    pub async fn codegen(&self, sql: Option<&str>, options: &CodegenOptions) -> FsqResult<()> {
+        let sql = sql
+            .or(self.last_select.as_deref())
+            .ok_or(FsqError::NoSelectToGenerate)?;
+        let snippet = match options.sample_rows() {
+            Some(rows) => interruptible(options.sampled(&self.connection.db, sql, rows)).await??,
+            None => options.offline(sql)?,
+        };
+        self.output.print(&highlighted(&snippet, &self.theme))
     }
 
     /// Prints the grids of a statement and its footer in one write.

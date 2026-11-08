@@ -1,3 +1,4 @@
+use crate::codegen::CodegenArgs;
 use crate::connection::{DatabaseId, ProjectId};
 use crate::describe::DescribeTarget;
 use crate::export::ExportArgs;
@@ -61,6 +62,10 @@ pub enum CliCommand {
     Export(ExportArgs),
     #[command(about = "Write the documents of a JSON lines file, as `export` writes them")]
     Import(ImportArgs),
+    #[command(
+        about = "Show the fluent Rust code of the firestore crate for a SELECT, with a row struct typed from sample rows"
+    )]
+    Codegen(CodegenArgs),
     #[command(
         subcommand,
         about = "Plan, sync, list, export, create and delete indexes, from a firestore.indexes.json"

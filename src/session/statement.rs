@@ -29,6 +29,9 @@ impl Session {
         let options = FirestoreSqlOptions::new().allow_index_statements();
         let statement =
             FirestoreSqlStatement::translate(&db, sql, &FirestoreSqlParameters::new(), &options)?;
+        if matches!(statement, FirestoreSqlStatement::Query(_)) {
+            self.last_select = Some(sql.to_string());
+        }
         let mut builder = db.fluent().sql(sql).options(options);
         let waits_for =
             waited_collection_group(&statement).filter(|_| self.settings.wait == Switch::On);

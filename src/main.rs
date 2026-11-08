@@ -1,4 +1,5 @@
 mod args;
+mod codegen;
 mod connection;
 mod describe;
 mod errors;
@@ -104,6 +105,20 @@ async fn run(args: CliArgs) -> FsqResult<()> {
             Session::new(connection, settings, Interaction::Script)
                 .describe(&target)
                 .await
+        }
+        CliCommand::Codegen(codegen_args) => {
+            let options = &codegen_args.options;
+            let snippet = match options.sample_rows() {
+                Some(rows) => {
+                    let connection = Connection::open(args.project, args.database).await?;
+                    options
+                        .sampled(&connection.db, &codegen_args.sql, rows)
+                        .await?
+                }
+                None => options.offline(&codegen_args.sql)?,
+            };
+            let output = Output::detect();
+            output.print(&codegen::highlighted(&snippet, &output.theme()))
         }
         CliCommand::Index(command) => {
             let connection = Connection::open(args.project, args.database).await?;
