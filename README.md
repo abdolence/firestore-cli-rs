@@ -14,6 +14,8 @@ crate, which translates SQL into Firestore pipelines.
   collection;
 * **Index statements:** `CREATE INDEX`, `DROP INDEX`, `ALTER COLLECTION` and `SHOW INDEXES`, waiting for an index
   build with a spinner;
+* **Index files:** `fsq index` plans, syncs, exports, lists, creates and deletes indexes from a
+  `firestore.indexes.json`, the file of the Firebase CLI;
 * **Collections and fields:** `\l` lists the collections, and `\d` lists the field paths of a collection with their
   types, how often they are present and an example value;
 * **Export and import:** documents as JSON lines, in an encoding that reads back to the same Firestore types;
@@ -118,6 +120,79 @@ DROP INDEX IF EXISTS `CICAgJim14AK`;
 ```
 
 The statements and their options are in [Index statements](https://firestore-rust.abdolence.dev/sql/indexes.html).
+
+## Indexes from a file
+
+`fsq index` works on the `firestore.indexes.json` format of the Firebase CLI: the `indexes` and the
+`fieldOverrides` of each collection group. Planning and syncing use the index management of the
+firestore crate, which owns one collection group at a time, so fsq plans and syncs the groups of a file
+one after another.
+
+```sh
+fsq -p my-project index export -o firestore.indexes.json
+fsq -p my-project index plan firestore.indexes.json
+fsq -p my-project index sync firestore.indexes.json
+fsq -p my-project index list --group books
+fsq -p my-project index create books genre:asc rating:desc
+fsq -p my-project index delete books genre:asc rating:desc --if-exists
+```
+
+* `plan <file> [--prune]` prints one row per index, field override and TTL field: `create`, `update`, `enable`,
+  `delete`, `revert`, `disable`, `unchanged`, `pending`, `needs repair` and `undeclared`. It writes nothing;
+* `sync <file> [--prune] [--no-wait]` applies the plan, with a spinner for each collection group while its builds
+  run, and prints the same table. `--no-wait` returns once the last change is requested. Ctrl-C stops the wait, not
+  the builds, and `fsq index list` shows their state afterwards;
+* `list [--group <collection group>]` lists the live indexes and field overrides, as `SHOW INDEXES` does;
+* `export [-o <file>]` writes the live indexes, field overrides and TTL fields as an indexes file, to stdout
+  without `-o`. Items the firestore crate cannot represent are named on stderr and left out;
+* `create <collection group> <field>:<mode>... [--scope collection|group] [--if-not-exists]` creates one composite
+  index. The mode is `asc`, `desc` or `contains`;
+* `delete <index id> [--if-exists]` or `delete <collection group> <field>:<mode>... [--scope ..] [--if-exists]`
+  deletes one index, named by its ID or by its definition.
+
+Without `--prune`, what the database has and the file does not declare is shown as `undeclared` and left alone,
+in every collection group of the database, including the ones the file does not name. `--prune` deletes
+undeclared indexes, reverts undeclared field overrides to automatic indexing and disables undeclared TTL fields.
+A pruning sync deletes only after the indexes it created have finished building, even with `--no-wait`.
+
+### The file
+
+The `indexes` and `fieldOverrides` keys are the Firebase format: `collectionGroup`, `queryScope`, `fields` with
+`fieldPath` and one of `order`, `arrayConfig` or `vectorConfig`, and on an override `indexes` with a `queryScope`
+and an `order` or an `arrayConfig`. An empty `indexes` exempts the field, and the `fieldPath` `*` names every field
+of the collection group. The Firebase format has no key for what only the Enterprise edition offers, and none for
+a TTL field that keeps its automatic indexes. These go under `fsq` keys, which the Firebase CLI ignores:
+
+| Key | Holds |
+|---|---|
+| `fsq.ttl` on the file | a list of `{ "collectionGroup", "fieldPath" }`, the field whose timestamp expires the document |
+| `fsq.unique` on an index | `true` for a unique index |
+| `fsq.density` on an index | `SPARSE_ALL`, `SPARSE_ANY` or `DENSE` |
+| `fsq.search` on an index | `textLanguage` and `textLanguageOverrideFieldPath` of a search index |
+| `fsq.mode` on an index field | `TEXT` or `GEO`, with `geoJsonIndexingDisabled` for `GEO` |
+
+```json
+{
+  "indexes": [
+    {
+      "collectionGroup": "articles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "body", "fsq": { "mode": "TEXT" } },
+        { "fieldPath": "published", "order": "DESCENDING" }
+      ],
+      "fsq": { "density": "SPARSE_ANY", "search": { "textLanguage": "en" } }
+    }
+  ],
+  "fieldOverrides": [],
+  "fsq": { "ttl": [{ "collectionGroup": "sessions", "fieldPath": "expires_at" }] }
+}
+```
+
+A key that neither the Firebase format nor `fsq` defines is refused with its path, so that no setting is dropped
+without notice: the `ttl` key of a Firebase field override is one, and the TTL field goes under `fsq.ttl`. A field
+sets exactly one of `order`, `arrayConfig`, `vectorConfig` and `fsq.mode`. A Standard edition database lists every
+index with `density` `SPARSE_ALL`, and `export` writes it out.
 
 ## Query plans
 
