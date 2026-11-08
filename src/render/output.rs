@@ -1,10 +1,14 @@
 use super::Theme;
 use crate::errors::{FsqError, FsqResult, PagerFailed};
 use console::{Key, Term};
+use std::ffi::OsString;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
 const DEFAULT_PAGER: &str = "less -RFX";
+
+/// Quit if the text fits one screen, show colours, and leave the text on screen on exit.
+const LESS_DEFAULT_OPTIONS: &str = "FRX";
 
 /// Where results go: stdout, through a pager when stdout is a terminal and a result is taller than
 /// it, and notices to stderr.
@@ -116,11 +120,8 @@ impl Pager {
                 source,
             })
         };
-        let mut words = self.command.split_whitespace();
-        let program = words.next().unwrap_or(DEFAULT_PAGER);
-        let mut child = Command::new(program)
-            .args(words)
-            .stdin(Stdio::piped())
+        let mut child = self
+            .command(std::env::var_os("LESS"))
             .spawn()
             .map_err(pager_error)?;
         if let Some(mut stdin) = child.stdin.take() {
@@ -132,5 +133,56 @@ impl Pager {
         }
         child.wait().map_err(pager_error)?;
         Ok(())
+    }
+
+    /// The pager's process, reading the text from a pipe. Like git, it sets `LESS` to
+    /// [`LESS_DEFAULT_OPTIONS`] for the pager alone when `inherited_less` is `None`, so that
+    /// `less` keeps the output on screen after `q`, does not page what fits on one screen and
+    /// passes colours through. A `LESS` that is set, even to nothing, is the user's choice.
+    fn command(&self, inherited_less: Option<OsString>) -> Command {
+        let mut words = self.command.split_whitespace();
+        let program = words.next().unwrap_or(DEFAULT_PAGER);
+        let mut command = Command::new(program);
+        command.args(words).stdin(Stdio::piped());
+        if inherited_less.is_none() {
+            command.env("LESS", LESS_DEFAULT_OPTIONS);
+        }
+        command
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    fn pager_environment(inherited_less: Option<&str>) -> Vec<(String, Option<String>)> {
+        let pager = Pager {
+            command: "less".to_string(),
+        };
+        pager
+            .command(inherited_less.map(OsString::from))
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.map(OsStr::to_string_lossy).map(String::from),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_pager_gets_less_options_when_the_environment_sets_none() {
+        assert_eq!(
+            pager_environment(None),
+            vec![("LESS".to_string(), Some("FRX".to_string()))]
+        );
+    }
+
+    #[test]
+    fn a_less_variable_that_is_set_is_left_to_the_pager_even_when_empty() {
+        assert_eq!(pager_environment(Some("")), vec![]);
+        assert_eq!(pager_environment(Some("R")), vec![]);
     }
 }

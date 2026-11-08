@@ -116,7 +116,9 @@ my-project/my-database (enterprise)> SELECT __name__, title, address, tags, publ
 
 `\x` shows each document as a block, with nested values pretty-printed, and `\x auto` does so only for a table wider
 than the terminal. A result taller than the terminal goes through `$PAGER`, or `less -RFX` when it is
-unset; an empty `PAGER` turns the pager off.
+unset; an empty `PAGER` turns the pager off. When `LESS` is not set, fsq sets it to `FRX` for the pager alone, as git
+does, so that `less` keeps the output on screen after `q`, does not page what fits on one screen and shows colours; a
+`LESS` that is set, even to nothing, is left as it is.
 
 ## Writes and index statements
 
