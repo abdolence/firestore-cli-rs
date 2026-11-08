@@ -38,6 +38,11 @@ tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[features]
+# Runs tests/live.rs against the Enterprise edition database named by GCP_PROJECT and
+# GCP_ENTERPRISE_DATABASE_ID, with the application default credentials.
+ci-live = []
+
 [lints.clippy]
 mod_module_files = "deny"
 unwrap_used = "deny"
