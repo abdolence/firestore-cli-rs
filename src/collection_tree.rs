@@ -103,7 +103,7 @@ impl CollectionTree {
     /// more.
     pub async fn walk(db: &FirestoreDb, target: CollectionTreeTarget) -> FsqResult<Self> {
         let walk = Walk::new(db);
-        let converter = db.json();
+        let documents_path = db.get_documents_path();
         let limit = target.sample.documents() as usize;
         let mut collections = Vec::new();
         let mut levels = Vec::new();
@@ -133,7 +133,7 @@ impl CollectionTree {
                 let mut found: BTreeMap<FirestoreCollectionId, Vec<CollectionPath>> =
                     BTreeMap::new();
                 for (document, listing) in documents.iter().zip(listings) {
-                    let relative = converter.relative_name(document);
+                    let relative = FirestoreDb::relative_document_name(documents_path, document);
                     for id in listing? {
                         let path = CollectionPath::in_document(relative, id.clone());
                         found.entry(id).or_default().push(path);

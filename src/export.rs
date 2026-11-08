@@ -5,8 +5,8 @@ use crate::render::{animated, counted, Output};
 use crate::walk::{DocumentStream, Walk};
 use clap::ArgGroup;
 use firestore::{
-    FirestoreCollectionId, FirestoreDb, FirestoreDocument, FirestoreJsonConverter,
-    FirestoreJsonDocumentOptions, FirestoreSqlOptions, FirestoreSqlOutcome,
+    FirestoreCollectionId, FirestoreDb, FirestoreDocument, FirestoreJsonOptions,
+    FirestoreSqlOptions, FirestoreSqlOutcome,
 };
 use futures::StreamExt;
 use indicatif::ProgressBar;
@@ -65,8 +65,8 @@ pub async fn run(connection: &Connection, args: &ExportArgs) -> FsqResult<()> {
     let to_terminal = args.output.is_none() && std::io::stdout().is_terminal();
     let export = Export {
         db: &connection.db,
-        converter: connection.db.json(),
-        options: FirestoreJsonDocumentOptions::new().with_metadata(args.with_metadata),
+        documents_path: connection.db.get_documents_path(),
+        options: FirestoreJsonOptions::new().with_metadata(args.with_metadata),
         plain: args.plain,
         recursive: args.recursive,
         progress: if to_terminal {
@@ -99,8 +99,8 @@ pub async fn run(connection: &Connection, args: &ExportArgs) -> FsqResult<()> {
 
 struct Export<'a> {
     db: &'a FirestoreDb,
-    converter: FirestoreJsonConverter<'a>,
-    options: FirestoreJsonDocumentOptions,
+    documents_path: &'a str,
+    options: FirestoreJsonOptions,
     plain: bool,
     recursive: bool,
     progress: ProgressBar,
@@ -155,7 +155,7 @@ impl Export<'_> {
         document: &FirestoreDocument,
         subcollections: &mut VecDeque<CollectionPath>,
     ) -> FsqResult<()> {
-        let parent = self.converter.relative_name(&document.name);
+        let parent = FirestoreDb::relative_document_name(self.documents_path, &document.name);
         for collection_id in Walk::new(self.db)
             .collection_ids(Some(&document.name))
             .await?
@@ -167,12 +167,10 @@ impl Export<'_> {
 
     fn write_line<W: Write>(&self, writer: &mut W, document: &FirestoreDocument) -> FsqResult<()> {
         let json = if self.plain {
-            self.converter
-                .plain_document(document, &self.options)
+            FirestoreDb::serialize_doc_to_plain_json(self.documents_path, document, &self.options)
                 .into_inner()
         } else {
-            self.converter
-                .tagged_document(document, &self.options)?
+            FirestoreDb::serialize_doc_to_tagged_json(self.documents_path, document, &self.options)?
                 .into_inner()
         };
         writeln!(writer, "{json}")?;

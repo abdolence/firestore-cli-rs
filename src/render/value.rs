@@ -3,7 +3,7 @@ use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
 use firestore::gcloud_sdk::prost_types::Timestamp;
 use firestore::timestamp_utils::from_timestamp;
-use firestore::FirestoreJsonConverter;
+use firestore::FirestoreDb;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter, Write};
 
@@ -114,7 +114,10 @@ impl View<'_> {
                 .to_string(),
             Some(ValueType::ReferenceValue(name)) => theme
                 .reference
-                .apply_to(FirestoreJsonConverter::new(self.documents_path).relative_name(name))
+                .apply_to(FirestoreDb::relative_document_name(
+                    self.documents_path,
+                    name,
+                ))
                 .to_string(),
             Some(ValueType::GeoPointValue(point)) => theme
                 .number
@@ -134,9 +137,7 @@ impl View<'_> {
 
     /// A value as plain JSON, in the firestore crate's plain encoding.
     pub fn json_value(&self, value: &Value) -> serde_json::Value {
-        FirestoreJsonConverter::new(self.documents_path)
-            .plain(value)
-            .into_inner()
+        FirestoreDb::serialize_value_to_plain_json(self.documents_path, value).into_inner()
     }
 }
 

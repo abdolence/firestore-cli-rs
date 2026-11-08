@@ -12,7 +12,7 @@ use firestore::gcloud_sdk::google::rpc::Status;
 use firestore::gcloud_sdk::prost::Message;
 use firestore::gcloud_sdk::tonic::Code;
 use firestore::{
-    FirestoreDocument, FirestoreFieldPathSegment, FirestoreJsonConverter, FirestoreResult,
+    FirestoreDb, FirestoreDocument, FirestoreFieldPathSegment, FirestoreResult,
     FirestoreSimpleBatchWriter, FirestoreTaggedJson, FirestoreWritePrecondition,
 };
 use indicatif::ProgressBar;
@@ -133,7 +133,7 @@ pub async fn run(connection: &Connection, args: &ImportArgs) -> FsqResult<()> {
     };
     let mut import = Import {
         args,
-        converter: connection.db.json(),
+        documents_path: connection.db.get_documents_path(),
         current_document: args.current_document()?,
         writer: &writer,
         output,
@@ -278,7 +278,7 @@ impl Batch {
 
 struct Import<'a> {
     args: &'a ImportArgs,
-    converter: FirestoreJsonConverter<'a>,
+    documents_path: &'a str,
     current_document: Option<Precondition>,
     writer: &'a FirestoreSimpleBatchWriter,
     output: Output,
@@ -302,7 +302,7 @@ impl Import<'_> {
             if text.trim_ascii().is_empty() {
                 continue;
             }
-            match read_document(&self.converter, line, &text) {
+            match read_document(self.documents_path, line, &text) {
                 Ok(document) => {
                     let queued = self.queued(line, document);
                     if !self.batch.accepts(&queued) {
@@ -317,7 +317,7 @@ impl Import<'_> {
     }
 
     fn queued(&self, line: usize, document: FirestoreDocument) -> QueuedWrite {
-        let name = self.converter.relative_name(&document.name);
+        let name = FirestoreDb::relative_document_name(self.documents_path, &document.name);
         let origin = Origin {
             line,
             document: name.to_string(),
@@ -370,15 +370,14 @@ impl Import<'_> {
 }
 
 fn read_document(
-    converter: &FirestoreJsonConverter<'_>,
+    documents_path: &str,
     line: usize,
     text: &[u8],
 ) -> Result<FirestoreDocument, ImportLine> {
     let failed = |cause| ImportLine { line, cause };
     let tagged = serde_json::from_slice::<FirestoreTaggedJson>(text)
         .map_err(|error| failed(ImportLineCause::InvalidJson(error)))?;
-    converter
-        .document_from_tagged(tagged)
+    FirestoreDb::deserialize_doc_from_tagged_json(documents_path, tagged)
         .map_err(|error| failed(error.into()))
 }
 
@@ -405,10 +404,6 @@ mod tests {
     fn write_of(arguments: &[&str], document: FirestoreDocument) -> Write {
         let args = import_args(arguments).expect("arguments");
         args.write(document, args.current_document().expect("a precondition"))
-    }
-
-    fn converter() -> FirestoreJsonConverter<'static> {
-        FirestoreJsonConverter::new(DOCUMENTS_PATH)
     }
 
     fn value(value_type: ValueType) -> Value {
@@ -457,7 +452,7 @@ mod tests {
 
     #[test]
     fn a_line_that_is_not_json_names_its_line_number() {
-        let error = read_document(&converter(), 3, b"{\"__name__\": ").expect_err("not JSON");
+        let error = read_document(DOCUMENTS_PATH, 3, b"{\"__name__\": ").expect_err("not JSON");
 
         assert_eq!(error.line, 3);
         assert!(matches!(error.cause, ImportLineCause::InvalidJson(_)));
@@ -466,7 +461,7 @@ mod tests {
     #[test]
     fn a_refused_document_carries_the_code_of_the_crate() {
         let error = read_document(
-            &converter(),
+            DOCUMENTS_PATH,
             7,
             br#"{"__name__": "books/dune", "at": {"$when": "x"}}"#,
         )

@@ -3,8 +3,8 @@ use crate::errors::{FsqError, FsqResult};
 use crate::meta::Switch;
 use crate::render::{animated, counted, Cell, DurationText, Footer, Grid, OutputFormat};
 use firestore::{
-    FirestoreCollectionId, FirestoreExplainOptions, FirestoreIndexListing, FirestoreIndexState,
-    FirestoreListedCompositeIndex, FirestoreSqlOptions, FirestoreSqlOutcome,
+    FirestoreCollectionId, FirestoreDb, FirestoreExplainOptions, FirestoreIndexListing,
+    FirestoreIndexState, FirestoreListedCompositeIndex, FirestoreSqlOptions, FirestoreSqlOutcome,
     FirestoreSqlParameters, FirestoreSqlStatement,
 };
 use indicatif::ProgressBar;
@@ -86,10 +86,14 @@ impl Session {
             }
             FirestoreSqlOutcome::Collections(collection_ids) => {
                 let parent = match statement {
-                    FirestoreSqlStatement::ShowCollections(params) => params
-                        .parent
-                        .as_deref()
-                        .map(|parent| self.connection.db.json().relative_name(parent)),
+                    FirestoreSqlStatement::ShowCollections(params) => {
+                        params.parent.as_deref().map(|parent| {
+                            FirestoreDb::relative_document_name(
+                                self.connection.db.get_documents_path(),
+                                parent,
+                            )
+                        })
+                    }
                     _ => None,
                 };
                 if parent.is_none() {
