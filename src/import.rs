@@ -180,18 +180,14 @@ impl Tally {
             Ok(statuses) => statuses,
             Err(cause) => {
                 self.failed += origins.len();
-                return origins
-                    .first()
-                    .zip(origins.last())
-                    .map(|(first, last)| {
-                        FsqError::ImportBatchRefused(ImportBatchRefused {
-                            first_line: first.line,
-                            last_line: last.line,
-                            cause,
-                        })
-                    })
-                    .into_iter()
-                    .collect();
+                let (Some(first), Some(last)) = (origins.first(), origins.last()) else {
+                    return Vec::new();
+                };
+                return vec![FsqError::ImportBatchRefused(ImportBatchRefused {
+                    first_line: first.line,
+                    last_line: last.line,
+                    cause,
+                })];
             }
         };
         let mut failures = Vec::new();
