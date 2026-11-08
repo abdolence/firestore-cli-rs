@@ -166,7 +166,7 @@ impl Export<'_> {
             .collection_ids(Some(&document.name))
             .await?
         {
-            subcollections.push_back(format!("{parent}/{collection_id}").parse()?);
+            subcollections.push_back(CollectionPath::in_document(parent, collection_id));
         }
         Ok(())
     }

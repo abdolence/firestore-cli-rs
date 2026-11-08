@@ -1,6 +1,7 @@
 use crate::connection::{Connection, EditionStatus};
 use crate::errors::{FsqError, FsqResult, InvalidCollectionPath, InvalidSampleSize};
 use crate::render::{Cell, Grid};
+use crate::walk::Walk;
 use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
 use firestore::{
@@ -29,6 +30,22 @@ impl CollectionPath {
 
     pub fn collection_id(&self) -> &FirestoreCollectionId {
         &self.collection_id
+    }
+
+    /// The collection `collection_id` under the document at `parent`, a path from the documents
+    /// root.
+    pub fn in_document(parent: &str, collection_id: FirestoreCollectionId) -> Self {
+        Self {
+            parent: Some(parent.to_string()),
+            collection_id,
+        }
+    }
+
+    /// The full resource name of the parent document, given the documents path of the database.
+    pub fn parent_name(&self, documents_path: &str) -> Option<String> {
+        self.parent
+            .as_ref()
+            .map(|parent| format!("{documents_path}/{parent}"))
     }
 }
 
@@ -147,15 +164,12 @@ impl Description {
     pub async fn sample(connection: &Connection, target: &DescribeTarget) -> FsqResult<Self> {
         let db = &connection.db;
         let collection = &target.collection;
-        let parent = collection
-            .parent()
-            .map(|parent| format!("{}/{parent}", db.get_documents_path()));
         let size = target.sample.documents();
         let mut documents = match connection.edition {
             EditionStatus::Known(FirestoreDatabaseEdition::Enterprise) => {
                 let pipeline = FirestorePipeline::new(FirestorePipelineSource::Collection(
                     FirestoreCollectionSource::new(collection.collection_id().to_string())
-                        .opt_parent(parent),
+                        .opt_parent(collection.parent_name(db.get_documents_path())),
                 ))
                 .with_stage(FirestorePipelineStage::Sample(
                     FirestoreSampleStage::new(FirestoreSampleSize::Documents(size)),
@@ -167,22 +181,11 @@ impl Description {
                     .stream_query_with_errors()
                     .await?
             }
-            _ => {
-                let listing = db
-                    .fluent()
-                    .list()
-                    .from(collection.collection_id())
-                    .page_size(size as usize);
-                let listing = match parent {
-                    Some(parent) => listing.parent(parent),
-                    None => listing,
-                };
-                listing
-                    .stream_all_with_errors()
-                    .await?
-                    .take(size as usize)
-                    .boxed()
-            }
+            _ => Walk::new(db)
+                .documents(collection, false, Some(size as usize))
+                .await?
+                .take(size as usize)
+                .boxed(),
         };
         let mut description = Self::default();
         while let Some(document) = documents.next().await {

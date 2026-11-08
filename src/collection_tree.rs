@@ -150,7 +150,7 @@ impl CollectionTree {
                 for (document, listing) in documents.iter().zip(listings) {
                     let relative = converter.relative_name(document);
                     for id in listing? {
-                        let path = format!("{relative}/{id}").parse()?;
+                        let path = CollectionPath::in_document(relative, id.clone());
                         found.entry(id).or_default().push(path);
                     }
                 }

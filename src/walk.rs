@@ -27,8 +27,8 @@ impl<'a> Walk<'a> {
         page_size: Option<usize>,
     ) -> FsqResult<DocumentStream<'a>> {
         let listing = self.db.fluent().list().from(path.collection_id());
-        let listing = match path.parent() {
-            Some(parent) => listing.parent(format!("{}/{parent}", self.db.get_documents_path())),
+        let listing = match path.parent_name(self.db.get_documents_path()) {
+            Some(parent) => listing.parent(parent),
             None => listing,
         };
         let listing = if show_missing {
