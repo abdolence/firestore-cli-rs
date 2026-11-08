@@ -1,5 +1,6 @@
 mod args;
 mod codegen;
+mod collection_tree;
 mod connection;
 mod describe;
 mod errors;
@@ -13,6 +14,7 @@ mod repl;
 mod script;
 mod session;
 mod tokens;
+mod walk;
 
 use args::{CliArgs, CliCommand, SqlArgs};
 use clap::Parser;

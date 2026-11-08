@@ -1,4 +1,5 @@
 use crate::codegen::GenerateCommand;
+use crate::collection_tree::CollectionTreeTarget;
 use crate::connection::DatabaseId;
 use crate::describe::{CollectionPath, DescribeTarget, SampleSize};
 use crate::errors::{FsqError, FsqResult, UnknownMetaCommand};
@@ -9,7 +10,8 @@ use std::str::FromStr;
 pub enum MetaCommand {
     Quit,
     Help,
-    ListCollections,
+    /// `\l`, or with `--recursive` a walk of the collections below the root.
+    ListCollections(Option<CollectionTreeTarget>),
     Describe(DescribeTarget),
     /// `\x` without an argument toggles between the table and the expanded view.
     Expanded(Option<ExpandedMode>),
@@ -61,8 +63,8 @@ impl MetaCommandHelp {
 
 pub const META_COMMANDS: &[MetaCommandHelp] = &[
     MetaCommandHelp {
-        usage: "\\l",
-        summary: "list the collections under the root, as SHOW COLLECTIONS",
+        usage: "\\l [--recursive [--depth N] [--sample K]]",
+        summary: "list the collections under the root; --recursive samples K documents (20) per collection, down to depth N (2)",
     },
     MetaCommandHelp {
         usage: "\\d <collection> [--sample N]",
@@ -121,7 +123,7 @@ impl FromStr for MetaCommand {
         let command = match command {
             "\\q" | "\\quit" => no_arguments("\\q", &arguments, Self::Quit)?,
             "\\?" => no_arguments("\\?", &arguments, Self::Help)?,
-            "\\l" => no_arguments("\\l", &arguments, Self::ListCollections)?,
+            "\\l" => Self::ListCollections(CollectionTreeTarget::from_arguments(&arguments)?),
             "\\d" => Self::Describe(DescribeTarget::try_from(arguments.as_slice())?),
             "\\x" => Self::Expanded(optional_argument(
                 "\\x",
@@ -204,6 +206,40 @@ fn optional_argument<T>(
     }
 }
 
+impl CollectionTreeTarget {
+    /// The arguments of `\l`: none, or `--recursive` with an optional `--depth N` and
+    /// `--sample K`.
+    fn from_arguments(arguments: &[&str]) -> FsqResult<Option<Self>> {
+        const EXPECTED: &str = "--recursive with an optional --depth N and --sample K";
+        let mut target = Self::default();
+        let mut recursive = false;
+        let mut first_option = None;
+        let mut arguments = arguments.iter().copied();
+        while let Some(argument) = arguments.next() {
+            match argument {
+                "--recursive" => recursive = true,
+                "--depth" | "--sample" => {
+                    let value = arguments.next().ok_or_else(|| {
+                        FsqError::missing_meta_argument("\\l", "a number after --depth or --sample")
+                    })?;
+                    if argument == "--depth" {
+                        target.depth = value.parse()?;
+                    } else {
+                        target.sample = value.parse()?;
+                    }
+                    first_option.get_or_insert(argument);
+                }
+                other => return Err(FsqError::invalid_meta_argument("\\l", other, EXPECTED)),
+            }
+        }
+        match (recursive, first_option) {
+            (true, _) => Ok(Some(target)),
+            (false, None) => Ok(None),
+            (false, Some(option)) => Err(FsqError::invalid_meta_argument("\\l", option, EXPECTED)),
+        }
+    }
+}
+
 impl TryFrom<&[&str]> for DescribeTarget {
     type Error = FsqError;
 
@@ -243,7 +279,7 @@ mod tests {
     #[test]
     fn meta_commands_parse_with_their_arguments() {
         assert_eq!(parsed("\\q"), MetaCommand::Quit);
-        assert_eq!(parsed("\\l"), MetaCommand::ListCollections);
+        assert_eq!(parsed("\\l"), MetaCommand::ListCollections(None));
         assert_eq!(parsed("\\x"), MetaCommand::Expanded(None));
         assert_eq!(
             parsed("\\x auto"),
@@ -269,6 +305,51 @@ mod tests {
                 sample: SampleSize::default(),
             })
         );
+    }
+
+    #[test]
+    fn a_recursive_listing_takes_a_depth_and_a_sample_in_any_order() {
+        assert_eq!(
+            parsed("\\l --recursive"),
+            MetaCommand::ListCollections(Some(CollectionTreeTarget::default()))
+        );
+        let target = CollectionTreeTarget {
+            depth: "3".parse().expect("a depth"),
+            sample: "5".parse().expect("a sample size"),
+        };
+        assert_eq!(
+            parsed("\\l --recursive --depth 3 --sample 5"),
+            MetaCommand::ListCollections(Some(target))
+        );
+        assert_eq!(
+            parsed("\\l --sample 5 --depth 3 --recursive"),
+            MetaCommand::ListCollections(Some(target))
+        );
+    }
+
+    #[test]
+    fn a_depth_or_a_sample_needs_recursive() {
+        match "\\l --depth 3".parse::<MetaCommand>() {
+            Err(FsqError::InvalidMetaArgument(InvalidMetaArgument {
+                command, argument, ..
+            })) => {
+                assert_eq!(command, "\\l");
+                assert_eq!(argument, "--depth");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_depth_is_a_whole_number_of_one_or_more() {
+        assert!(matches!(
+            "\\l --recursive --depth 0".parse::<MetaCommand>(),
+            Err(FsqError::InvalidTreeDepth(_))
+        ));
+        assert!(matches!(
+            "\\l --recursive --depth".parse::<MetaCommand>(),
+            Err(FsqError::MissingMetaArgument(_))
+        ));
     }
 
     #[test]

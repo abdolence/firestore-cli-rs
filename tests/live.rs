@@ -101,6 +101,76 @@ fn recursive_export_reaches_the_subcollections_of_a_missing_document() {
     );
 }
 
+/// `root` with a document `w`, and under a document `x` that is never written a collection `b`
+/// with a document `y` that has a collection `c`.
+fn tree_with_a_missing_parent(root: &str) -> Collections {
+    let cleanup = Collections(vec![
+        format!("{root}/x/b/y/c"),
+        format!("{root}/x/b"),
+        root.to_string(),
+    ]);
+    let lines = format!(
+        "{{\"__name__\":\"{root}/w\",\"n\":1}}\n{{\"__name__\":\"{root}/x/b/y\",\"n\":2}}\n\
+         {{\"__name__\":\"{root}/x/b/y/c/z\",\"n\":3}}\n"
+    );
+    assert!(fsq(&["import", "-"], &lines).succeeded);
+    cleanup
+}
+
+/// The path and `seen_under` of every collection `\l --recursive` lists under `root`.
+fn listed_tree(root: &str, options: &str) -> Vec<(String, Option<String>)> {
+    let run = fsq(
+        &["--format", "jsonl"],
+        &format!("\\l --recursive {options}\n"),
+    );
+    assert!(run.succeeded, "{}", run.stderr);
+    run.stdout
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("a JSON line"))
+        .filter(|row| {
+            row["path"]
+                .as_str()
+                .is_some_and(|path| path.starts_with(root))
+        })
+        .map(|row| {
+            (
+                row["path"].as_str().expect("a path").to_string(),
+                row["seen_under"].as_str().map(str::to_string),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn recursive_listing_walks_down_through_a_missing_document() {
+    let root = unique_name("fsq-live-listing");
+    let _cleanup = tree_with_a_missing_parent(&root);
+
+    assert_eq!(
+        listed_tree(&root, "--depth 3 --sample 2"),
+        [
+            (root.clone(), None),
+            (
+                format!("{root}/*/b"),
+                Some(format!("1 of 2 sampled {root}"))
+            ),
+            (
+                format!("{root}/*/b/*/c"),
+                Some("1 of 1 sampled b".to_string())
+            ),
+        ]
+    );
+    assert_eq!(listed_tree(&root, "--depth 2 --sample 2").len(), 2);
+}
+
+#[test]
+fn recursive_listing_walks_no_more_documents_than_the_sample() {
+    let root = unique_name("fsq-live-listing-sample");
+    let _cleanup = tree_with_a_missing_parent(&root);
+
+    assert_eq!(listed_tree(&root, "--depth 3 --sample 1"), [(root, None)]);
+}
+
 fn lines_naming_d1_three_times(root: &str) -> String {
     format!(
         "{{\"__name__\":\"{root}/d1\",\"n\":1}}\n{{\"__name__\":\"{root}/d1\",\"n\":2}}\n\

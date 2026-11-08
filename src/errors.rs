@@ -19,6 +19,8 @@ pub enum FsqError {
     #[error(transparent)]
     InvalidSampleSize(InvalidSampleSize),
     #[error(transparent)]
+    InvalidTreeDepth(InvalidTreeDepth),
+    #[error(transparent)]
     UnknownMetaCommand(UnknownMetaCommand),
     #[error(transparent)]
     InvalidMetaArgument(InvalidMetaArgument),
@@ -68,6 +70,14 @@ pub struct InvalidCollectionPath {
 #[derive(Debug, Error)]
 #[error("`{value}` is not a sample size: {source}")]
 pub struct InvalidSampleSize {
+    pub value: String,
+    #[source]
+    pub source: ParseIntError,
+}
+
+#[derive(Debug, Error)]
+#[error("`{value}` is not a depth: {source}")]
+pub struct InvalidTreeDepth {
     pub value: String,
     #[source]
     pub source: ParseIntError,

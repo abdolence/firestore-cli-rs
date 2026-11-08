@@ -6,6 +6,8 @@ pub enum FooterNote {
     /// The rows are the first pages of a statement without a `LIMIT`, and more remain.
     MorePages,
     Sampled(Sample),
+    /// A listing that took a sample of every collection it walked.
+    SampledPerCollection(Sample),
     /// From sending the statement to the first response.
     RoundTrip(Duration),
     Stats(ExecutionStats),
@@ -41,6 +43,10 @@ impl View<'_> {
                 FooterNote::Sampled(sample) => format!(
                     "from a sample of {}",
                     counted(sample.documents, "document", "documents")
+                ),
+                FooterNote::SampledPerCollection(sample) => format!(
+                    "sampled {} per collection",
+                    counted(sample.documents, "doc", "docs")
                 ),
                 FooterNote::RoundTrip(round_trip) => {
                     format!("round trip {}", DurationText(*round_trip))
@@ -104,6 +110,18 @@ mod tests {
                 notes: vec![FooterNote::Sampled(Sample { documents: 1 })],
             }),
             "1 field path · 2.34 s · from a sample of 1 document\n"
+        );
+    }
+
+    #[test]
+    fn a_per_collection_sample_says_how_many_documents_each_collection_gave() {
+        assert_eq!(
+            footer_text(Footer {
+                counted: counted(3, "collection", "collections"),
+                elapsed: Duration::from_millis(480),
+                notes: vec![FooterNote::SampledPerCollection(Sample { documents: 20 })],
+            }),
+            "3 collections · 480 ms · sampled 20 docs per collection\n"
         );
     }
 }

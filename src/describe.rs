@@ -32,6 +32,15 @@ impl CollectionPath {
     }
 }
 
+impl From<FirestoreCollectionId> for CollectionPath {
+    fn from(collection_id: FirestoreCollectionId) -> Self {
+        Self {
+            parent: None,
+            collection_id,
+        }
+    }
+}
+
 impl FromStr for CollectionPath {
     type Err = FsqError;
 
@@ -72,6 +81,10 @@ impl SampleSize {
 
 impl SampleSize {
     const DEFAULT: NonZeroU32 = NonZeroU32::new(500).unwrap();
+
+    /// The sample `\l --recursive` takes of each collection, which only has to show which
+    /// subcollections exist.
+    pub const COLLECTION_TREE_DEFAULT: Self = Self(NonZeroU32::new(20).unwrap());
 }
 
 impl Default for SampleSize {

@@ -64,7 +64,7 @@ A statement ends with `;` and can span several lines. A line that starts with `\
 
 | Command | What it does |
 |---|---|
-| `\l` | lists the collections under the root, as `SHOW COLLECTIONS` does |
+| `\l [--recursive [--depth N] [--sample K]]` | lists the collections under the root, as `SHOW COLLECTIONS` does; with `--recursive` also the subcollections, see [Listing subcollections](#listing-subcollections) |
 | `\d <collection> [--sample N]` | lists the field paths of a collection, see [Describing a collection](#describing-a-collection) |
 | `\x [on\|off\|auto]` | switches the expanded view; without an argument toggles it |
 | `\c <database>` | connects to another database of the project |
@@ -275,6 +275,39 @@ A statement that is not a `SELECT`, and a `SELECT` with a construct the crate ca
 error that names the construct. The [fluent code](https://firestore-rust.abdolence.dev/sql/codegen.html) chapter of
 the crate lists what the output covers and how it types the fields. The sample is read with a `SELECT`, so it needs
 an Enterprise edition database, and `--offline` works on any edition.
+
+## Listing subcollections
+
+`\l --recursive` lists the collections under the root and the subcollections below them:
+
+```
+my-project/my-database (enterprise)> \l --recursive --depth 3
+╭────────────┬───────────────────────────┬───────┬──────────────────────────╮
+│ collection ┆ path                      ┆ depth ┆ seen_under               │
+╞════════════╪═══════════════════════════╪═══════╪══════════════════════════╡
+│ books      ┆ books                     ┆ 1     ┆                          │
+│ users      ┆ users                     ┆ 1     ┆                          │
+│ addresses  ┆ users/*/addresses         ┆ 2     ┆ 2 of 3 sampled users     │
+│ orders     ┆ users/*/orders            ┆ 2     ┆ 1 of 3 sampled users     │
+│ lines      ┆ users/*/addresses/*/lines ┆ 3     ┆ 1 of 2 sampled addresses │
+╰────────────┴───────────────────────────┴───────┴──────────────────────────╯
+5 collections · 3.10 s · sampled 20 docs per collection
+```
+
+Firestore lists the collections under one document at a time, so no call returns every subcollection.
+`\l --recursive` reads a sample of the documents of each collection and lists the collections under them:
+
+* `--sample K` is the number of documents read per collection path, 20 by default. For `users/*/addresses` that is 20
+  documents in all, taken from the `addresses` collections of the sampled users;
+* `--depth N` is the number of levels listed, 2 by default. Depth 1 is the root collections alone, and depth 3 reads
+  the documents of the collections at depths 1 and 2;
+* the sample is the first documents by ID. It includes a document that does not exist and has subcollections, such
+  as `users/carol` when only `users/carol/orders/o1` was written;
+* `path` shows each document ID on the way as `*`, `depth` is the level, and `seen_under` is how many of the sampled
+  documents of the collection above have this one. A subcollection that only documents outside the sample have is
+  not listed;
+* the footer gives the number of collections, the time and the sample. `--format json` and `jsonl` give the same
+  rows, with `seen_under` as text, and no footer.
 
 ## Export and import
 

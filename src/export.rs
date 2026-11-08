@@ -2,12 +2,12 @@ use crate::connection::Connection;
 use crate::describe::CollectionPath;
 use crate::errors::{FileAccess, FsqError, FsqResult, InvalidCollectionPath};
 use crate::render::{animated, counted, Output};
+use crate::walk::{DocumentStream, Walk};
 use clap::ArgGroup;
 use firestore::{
     FirestoreCollectionId, FirestoreDb, FirestoreDocument, FirestoreJsonConverter,
-    FirestoreJsonDocumentOptions, FirestoreResult, FirestoreSqlOptions, FirestoreSqlOutcome,
+    FirestoreJsonDocumentOptions, FirestoreSqlOptions, FirestoreSqlOutcome,
 };
-use futures::stream::BoxStream;
 use futures::StreamExt;
 use indicatif::ProgressBar;
 use std::collections::VecDeque;
@@ -99,8 +99,6 @@ pub async fn run(connection: &Connection, args: &ExportArgs) -> FsqResult<()> {
     ))
 }
 
-type DocumentStream<'b> = BoxStream<'b, FirestoreResult<FirestoreDocument>>;
-
 struct Export<'a> {
     db: &'a FirestoreDb,
     format: ExportFormat<'a>,
@@ -164,34 +162,19 @@ impl Export<'_> {
         subcollections: &mut VecDeque<CollectionPath>,
     ) -> FsqResult<()> {
         let parent = self.format.converter.relative_name(&document.name);
-        let mut collection_ids = self
-            .db
-            .fluent()
-            .list()
-            .collections()
-            .parent(&document.name)
-            .stream_all_with_errors()
-            .await?;
-        while let Some(collection_id) = collection_ids.next().await {
-            subcollections.push_back(format!("{parent}/{}", collection_id?).parse()?);
+        for collection_id in Walk::new(self.db)
+            .collection_ids(Some(&document.name))
+            .await?
+        {
+            subcollections.push_back(format!("{parent}/{collection_id}").parse()?);
         }
         Ok(())
     }
 
     async fn collection(&self, path: &CollectionPath) -> FsqResult<DocumentStream<'_>> {
-        let listing = self.db.fluent().list().from(path.collection_id());
-        let listing = match path.parent() {
-            Some(parent) => listing.parent(format!("{}/{parent}", self.db.get_documents_path())),
-            None => listing,
-        };
-        // ListDocuments skips a document that does not exist, and with it every subcollection
-        // below it.
-        let listing = if self.recursive {
-            listing.show_missing()
-        } else {
-            listing
-        };
-        Ok(listing.stream_all_with_errors().await?)
+        Walk::new(self.db)
+            .documents(path, self.recursive, None)
+            .await
     }
 
     async fn group(&self, group: &FirestoreCollectionId) -> FsqResult<DocumentStream<'_>> {

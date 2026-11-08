@@ -3,6 +3,7 @@ mod rows;
 mod statement;
 
 use crate::codegen::{highlighted, CodegenOptions};
+use crate::collection_tree::{CollectionTree, CollectionTreeTarget};
 use crate::connection::{Connection, EditionStatus};
 use crate::describe::{DescribeTarget, Description};
 use crate::errors::{FsqError, FsqResult};
@@ -106,7 +107,8 @@ impl Session {
         match command {
             MetaCommand::Quit => return Ok(Flow::Quit),
             MetaCommand::Help => self.output.print(&meta_help())?,
-            MetaCommand::ListCollections => self.run_statement("SHOW COLLECTIONS").await?,
+            MetaCommand::ListCollections(None) => self.run_statement("SHOW COLLECTIONS").await?,
+            MetaCommand::ListCollections(Some(target)) => self.list_collection_tree(target).await?,
             MetaCommand::Describe(target) => self.describe(&target).await?,
             MetaCommand::Expanded(mode) => {
                 self.settings.expanded = mode.unwrap_or(match self.settings.expanded {
@@ -175,6 +177,22 @@ impl Session {
             None => options.offline(sql)?,
         };
         self.output.print(&highlighted(&snippet, &self.theme))
+    }
+
+    async fn list_collection_tree(&self, target: CollectionTreeTarget) -> FsqResult<()> {
+        let started = Instant::now();
+        let tree = interruptible(CollectionTree::walk(&self.connection.db, target)).await??;
+        let sample = tree.sample();
+        let grid = tree.into_grid();
+        let footer = Footer {
+            counted: counted(grid.len(), "collection", "collections"),
+            elapsed: started.elapsed(),
+            notes: sample
+                .map(FooterNote::SampledPerCollection)
+                .into_iter()
+                .collect(),
+        };
+        self.print_grids(&[("", &grid)], &footer)
     }
 
     /// Prints the grids of a statement and its footer in one write.
