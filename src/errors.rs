@@ -34,6 +34,8 @@ pub enum FsqError {
     #[error(transparent)]
     ImportWrite(ImportWrite),
     #[error(transparent)]
+    ImportBatchRefused(ImportBatchRefused),
+    #[error(transparent)]
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     InvalidIndexesFile(InvalidIndexesFile),
@@ -126,18 +128,7 @@ pub enum ImportLineCause {
     #[error("not JSON: {0}")]
     InvalidJson(#[source] serde_json::Error),
     #[error(transparent)]
-    InvalidDocument(InvalidDocument),
-    #[error(transparent)]
-    Firestore(FirestoreError),
-}
-
-/// A document the tagged encoding refused.
-#[derive(Debug, Error)]
-#[error("{code}: {message}")]
-pub struct InvalidDocument {
-    /// One of the constants of `firestore::errors::codes`.
-    pub code: String,
-    pub message: String,
+    Firestore(#[from] FirestoreError),
 }
 
 /// A document of an import file that Firestore refused to write.
@@ -148,6 +139,17 @@ pub struct ImportWrite {
     pub document: String,
     pub code: Code,
     pub message: String,
+}
+
+/// A request that Firestore refused as a whole, so that none of the documents of its lines was
+/// written.
+#[derive(Debug, Error)]
+#[error("lines {first_line} to {last_line}: the request was refused: {cause}")]
+pub struct ImportBatchRefused {
+    pub first_line: usize,
+    pub last_line: usize,
+    #[source]
+    pub cause: FirestoreError,
 }
 
 #[derive(Debug, Error)]

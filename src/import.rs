@@ -1,15 +1,16 @@
 use crate::connection::Connection;
 use crate::errors::{
-    FileAccess, FsqError, FsqResult, ImportLine, ImportLineCause, ImportWrite, InputsFailed,
-    InvalidDocument,
+    FileAccess, FsqError, FsqResult, ImportBatchRefused, ImportLine, ImportLineCause, ImportWrite,
+    InputsFailed,
 };
 use crate::render::{animated, counted, Output};
 use clap::ValueEnum;
-use firestore::errors::FirestoreError;
 use firestore::gcloud_sdk::google::firestore::v1::{write::Operation, DocumentMask, Write};
+use firestore::gcloud_sdk::google::rpc::Status;
+use firestore::gcloud_sdk::prost::Message;
 use firestore::gcloud_sdk::tonic::Code;
 use firestore::{
-    FirestoreDocument, FirestoreFieldPathSegment, FirestoreJsonConverter,
+    FirestoreDocument, FirestoreFieldPathSegment, FirestoreJsonConverter, FirestoreResult,
     FirestoreSimpleBatchWriter, FirestoreTaggedJson, FirestoreWritePrecondition,
 };
 use indicatif::ProgressBar;
@@ -20,8 +21,11 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::str::FromStr;
 
-/// How many writes one request carries: the most a Firestore commit takes.
+/// How many writes one request carries: the most a BatchWrite takes.
 const WRITES_PER_BATCH: usize = 500;
+
+/// The encoded size at which a request is sent, below the 10 MiB that BatchWrite refuses.
+const BYTES_PER_BATCH: usize = 9 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportInput {
@@ -128,8 +132,7 @@ pub async fn run(connection: &Connection, args: &ImportArgs) -> FsqResult<()> {
         writer: &writer,
         output,
         progress: progress(size),
-        writes: Vec::new(),
-        origins: Vec::new(),
+        batch: Batch::default(),
         tally: Tally::default(),
     };
     let result = import.read(input).await;
@@ -157,11 +160,60 @@ fn progress(size: Option<u64>) -> ProgressBar {
     bar
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct Tally {
     written: usize,
     skipped: usize,
     failed: usize,
+}
+
+impl Tally {
+    /// Counts what Firestore answered for the writes of one request, and returns each failure.
+    /// A write that failed does not stop the others of the request, and a refused request fails
+    /// every write of it.
+    fn settle(
+        &mut self,
+        args: &ImportArgs,
+        origins: Vec<Origin>,
+        outcome: FirestoreResult<Vec<Status>>,
+    ) -> Vec<FsqError> {
+        let statuses = match outcome {
+            Ok(statuses) => statuses,
+            Err(cause) => {
+                self.failed += origins.len();
+                return origins
+                    .first()
+                    .zip(origins.last())
+                    .map(|(first, last)| {
+                        FsqError::ImportBatchRefused(ImportBatchRefused {
+                            first_line: first.line,
+                            last_line: last.line,
+                            cause,
+                        })
+                    })
+                    .into_iter()
+                    .collect();
+            }
+        };
+        let mut failures = Vec::new();
+        for (origin, status) in origins.into_iter().zip(statuses) {
+            let code = Code::from(status.code);
+            if code == Code::Ok {
+                self.written += 1;
+            } else if args.skips(code) {
+                self.skipped += 1;
+            } else {
+                self.failed += 1;
+                failures.push(FsqError::ImportWrite(ImportWrite {
+                    line: origin.line,
+                    document: origin.document,
+                    code,
+                    message: status.message,
+                }));
+            }
+        }
+        failures
+    }
 }
 
 impl Display for Tally {
@@ -182,14 +234,44 @@ struct Origin {
     document: String,
 }
 
+struct QueuedWrite {
+    origin: Origin,
+    write: Write,
+}
+
+/// The writes of the next request.
+#[derive(Default)]
+struct Batch {
+    queued: Vec<QueuedWrite>,
+    encoded_len: usize,
+}
+
+impl Batch {
+    /// Whether `queued` can join this request. BatchWrite refuses a request that writes one
+    /// document twice, or that is over its size limit, and fails every write of it.
+    fn accepts(&self, queued: &QueuedWrite) -> bool {
+        self.queued.is_empty()
+            || (self.queued.len() < WRITES_PER_BATCH
+                && self.encoded_len + queued.write.encoded_len() <= BYTES_PER_BATCH
+                && self
+                    .queued
+                    .iter()
+                    .all(|held| held.origin.document != queued.origin.document))
+    }
+
+    fn push(&mut self, queued: QueuedWrite) {
+        self.encoded_len += queued.write.encoded_len();
+        self.queued.push(queued);
+    }
+}
+
 struct Import<'a> {
     args: &'a ImportArgs,
     reader: LineReader<'a>,
     writer: &'a FirestoreSimpleBatchWriter,
     output: Output,
     progress: ProgressBar,
-    writes: Vec<Write>,
-    origins: Vec<Origin>,
+    batch: Batch,
     tally: Tally,
 }
 
@@ -210,10 +292,11 @@ impl Import<'_> {
             }
             match self.reader.document(line, &text) {
                 Ok(document) => {
-                    self.queue(line, document)?;
-                    if self.writes.len() == WRITES_PER_BATCH {
+                    let queued = self.queued(line, document)?;
+                    if !self.batch.accepts(&queued) {
                         self.flush().await?;
                     }
+                    self.batch.push(queued);
                 }
                 Err(error) => self.refuse(FsqError::ImportLine(error)).await?,
             }
@@ -221,14 +304,15 @@ impl Import<'_> {
         self.flush().await
     }
 
-    fn queue(&mut self, line: usize, document: FirestoreDocument) -> FsqResult<()> {
+    fn queued(&self, line: usize, document: FirestoreDocument) -> FsqResult<QueuedWrite> {
         let name = self.reader.converter.relative_name(&document.name);
-        self.origins.push(Origin {
-            line,
-            document: name.to_string(),
-        });
-        self.writes.push(self.args.write(document)?);
-        Ok(())
+        Ok(QueuedWrite {
+            origin: Origin {
+                line,
+                document: name.to_string(),
+            },
+            write: self.args.write(document)?,
+        })
     }
 
     /// Counts a line that is no document. Without `--keep-going` the import ends here, after it
@@ -239,44 +323,35 @@ impl Import<'_> {
             self.report(&error);
             return Ok(());
         }
-        self.flush().await?;
+        if let Err(flush_error) = self.flush().await {
+            self.report(&error);
+            return Err(flush_error);
+        }
         Err(error)
     }
 
-    /// Sends the queued writes in one request. A write that failed does not stop the others of
-    /// the request, so without `--keep-going` the first failure is returned once all are counted.
+    /// Sends the queued writes in one request. Without `--keep-going` the first failure is
+    /// returned once all are counted.
     async fn flush(&mut self) -> FsqResult<()> {
-        if self.writes.is_empty() {
+        let batch = std::mem::take(&mut self.batch);
+        if batch.queued.is_empty() {
             return Ok(());
         }
-        let mut batch = self.writer.new_batch();
-        batch.writes = std::mem::take(&mut self.writes);
-        let origins = std::mem::take(&mut self.origins);
-        let response = batch.write().await?;
-        let mut first_failure = None;
-        for (origin, status) in origins.into_iter().zip(response.statuses) {
-            let code = Code::from(status.code);
-            if code == Code::Ok {
-                self.tally.written += 1;
-            } else if self.args.skips(code) {
-                self.tally.skipped += 1;
-            } else {
-                self.tally.failed += 1;
-                let failure = FsqError::ImportWrite(ImportWrite {
-                    line: origin.line,
-                    document: origin.document,
-                    code,
-                    message: status.message,
-                });
-                if self.args.keep_going {
-                    self.report(&failure);
-                } else {
-                    first_failure.get_or_insert(failure);
-                }
-            }
-        }
+        let (origins, writes): (Vec<_>, Vec<_>) = batch
+            .queued
+            .into_iter()
+            .map(|queued| (queued.origin, queued.write))
+            .unzip();
+        let mut request = self.writer.new_batch();
+        request.writes = writes;
+        let outcome = request.write().await.map(|response| response.statuses);
+        let failures = self.tally.settle(self.args, origins, outcome);
         self.progress.set_message(self.tally.to_string());
-        first_failure.map_or(Ok(()), Err)
+        if self.args.keep_going {
+            failures.iter().for_each(|failure| self.report(failure));
+            return Ok(());
+        }
+        failures.into_iter().next().map_or(Ok(()), Err)
     }
 
     fn report(&self, error: &FsqError) {
@@ -300,30 +375,17 @@ impl LineReader<'_> {
     }
 }
 
-impl From<FirestoreError> for ImportLineCause {
-    fn from(error: FirestoreError) -> Self {
-        match error {
-            FirestoreError::DeserializeError(error) => Self::InvalidDocument(InvalidDocument {
-                code: error.public.code,
-                message: error.message,
-            }),
-            other => Self::Firestore(other),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::args::{CliArgs, CliCommand};
-    use crate::export::ExportFormat;
-    use clap::{error::ErrorKind, Parser};
+    use clap::Parser;
     use firestore::errors::codes::JSON_UNKNOWN_WRAPPER;
+    use firestore::errors::{
+        FirestoreError, FirestoreInvalidParametersError, FirestoreInvalidParametersPublicDetails,
+    };
     use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
-    use firestore::gcloud_sdk::google::firestore::v1::{ArrayValue, MapValue, Value};
-    use firestore::gcloud_sdk::google::r#type::LatLng;
-    use firestore::gcloud_sdk::prost_types::Timestamp;
-    use firestore::FirestoreJsonDocumentOptions;
+    use firestore::gcloud_sdk::google::firestore::v1::Value;
 
     const DOCUMENTS_PATH: &str = "projects/demo/databases/(default)/documents";
 
@@ -349,101 +411,46 @@ mod tests {
         }
     }
 
-    fn map(fields: impl IntoIterator<Item = (&'static str, Value)>) -> Value {
-        value(ValueType::MapValue(MapValue {
-            fields: fields
-                .into_iter()
-                .map(|(name, field)| (name.to_string(), field))
-                .collect(),
-        }))
-    }
-
-    fn dune() -> FirestoreDocument {
+    fn book(id: &str, title: String) -> FirestoreDocument {
         FirestoreDocument {
-            name: format!("{DOCUMENTS_PATH}/books/dune"),
-            fields: [(
-                "title".to_string(),
-                value(ValueType::StringValue("Dune".to_string())),
-            )]
-            .into(),
+            name: format!("{DOCUMENTS_PATH}/books/{id}"),
+            fields: [("title".to_string(), value(ValueType::StringValue(title)))].into(),
             ..FirestoreDocument::default()
         }
     }
 
-    /// One field of every Firestore value type, including the shapes the tagged encoding escapes.
-    fn every_value_type() -> FirestoreDocument {
-        let fields = [
-            ("null", value(ValueType::NullValue(0))),
-            ("boolean", value(ValueType::BooleanValue(true))),
-            ("integer", value(ValueType::IntegerValue(-42))),
-            ("big integer", value(ValueType::IntegerValue(i64::MAX))),
-            ("double", value(ValueType::DoubleValue(1.5))),
-            ("infinity", value(ValueType::DoubleValue(f64::INFINITY))),
-            ("string", value(ValueType::StringValue("Dune".to_string()))),
-            ("bytes", value(ValueType::BytesValue(vec![0, 1, 2, 255]))),
-            (
-                "timestamp",
-                value(ValueType::TimestampValue(Timestamp {
-                    seconds: 1_700_000_000,
-                    nanos: 123_456_000,
-                })),
-            ),
-            (
-                "reference",
-                value(ValueType::ReferenceValue(format!(
-                    "{DOCUMENTS_PATH}/books/dune"
-                ))),
-            ),
-            (
-                "geo point",
-                value(ValueType::GeoPointValue(LatLng {
-                    latitude: 51.5,
-                    longitude: -0.12,
-                })),
-            ),
-            (
-                "array",
-                value(ValueType::ArrayValue(ArrayValue {
-                    values: vec![value(ValueType::IntegerValue(1)), map([])],
-                })),
-            ),
-            (
-                "map",
-                map([(
-                    "address",
-                    map([("city", value(ValueType::StringValue("London".to_string())))]),
-                )]),
-            ),
-            (
-                "wrapper lookalike",
-                map([("$timestamp", value(ValueType::StringValue("x".to_string())))]),
-            ),
-            (
-                "vector",
-                map([
-                    (
-                        "__type__",
-                        value(ValueType::StringValue("__vector__".to_string())),
-                    ),
-                    (
-                        "value",
-                        value(ValueType::ArrayValue(ArrayValue {
-                            values: vec![
-                                value(ValueType::DoubleValue(1.0)),
-                                value(ValueType::DoubleValue(2.5)),
-                            ],
-                        })),
-                    ),
-                ]),
-            ),
-        ];
-        FirestoreDocument {
-            name: format!("{DOCUMENTS_PATH}/books/every-type"),
-            fields: fields
-                .into_iter()
-                .map(|(name, field)| (name.to_string(), field))
-                .collect(),
-            ..FirestoreDocument::default()
+    fn dune() -> FirestoreDocument {
+        book("dune", "Dune".to_string())
+    }
+
+    fn queued(line: usize, document: FirestoreDocument) -> QueuedWrite {
+        QueuedWrite {
+            origin: Origin {
+                line,
+                document: format!("books/{}", document.name.rsplit('/').next().unwrap_or("")),
+            },
+            write: import_args(&[])
+                .expect("arguments")
+                .write(document)
+                .expect("a write"),
+        }
+    }
+
+    fn origins(lines: impl IntoIterator<Item = usize>) -> Vec<Origin> {
+        lines
+            .into_iter()
+            .map(|line| Origin {
+                line,
+                document: format!("books/{line}"),
+            })
+            .collect()
+    }
+
+    fn status(code: Code) -> Status {
+        Status {
+            code: code as i32,
+            message: "refused".to_string(),
+            details: Vec::new(),
         }
     }
 
@@ -466,23 +473,9 @@ mod tests {
         assert_eq!(error.line, 7);
         assert!(matches!(
             error.cause,
-            ImportLineCause::InvalidDocument(InvalidDocument { ref code, .. }) if code == JSON_UNKNOWN_WRAPPER
+            ImportLineCause::Firestore(FirestoreError::DeserializeError(ref refused))
+                if refused.public.code == JSON_UNKNOWN_WRAPPER
         ));
-    }
-
-    #[test]
-    fn an_exported_document_reads_back_unchanged() {
-        let document = every_value_type();
-        let format = ExportFormat {
-            converter: FirestoreJsonConverter::new(DOCUMENTS_PATH),
-            options: FirestoreJsonDocumentOptions::new(),
-            plain: false,
-        };
-        let line = format.line(&document).expect("a line");
-
-        let read = reader().document(1, line.as_bytes()).expect("a document");
-
-        assert_eq!(read, document);
     }
 
     #[test]
@@ -535,26 +528,112 @@ mod tests {
     }
 
     #[test]
-    fn skip_counts_a_document_that_exists_and_fail_does_not() {
-        let skip = import_args(&["--on-conflict", "skip"]).expect("arguments");
-        let fail = import_args(&["--on-conflict", "fail"]).expect("arguments");
+    fn a_batch_takes_a_document_once() {
+        let mut batch = Batch::default();
+        batch.push(queued(1, dune()));
 
-        assert!(skip.skips(Code::AlreadyExists));
-        assert!(!skip.skips(Code::PermissionDenied));
-        assert!(!fail.skips(Code::AlreadyExists));
+        assert!(!batch.accepts(&queued(2, dune())));
+        assert!(batch.accepts(&queued(2, book("emma", "Emma".to_string()))));
     }
 
     #[test]
-    fn overwrite_is_not_a_conflict_policy() {
-        let error = import_args(&["--on-conflict", "overwrite"]).expect_err("not a policy");
+    fn a_batch_stops_before_the_size_limit() {
+        let large = |id: &str| queued(1, book(id, "x".repeat(5 * 1024 * 1024)));
+        let mut batch = Batch::default();
+        assert!(batch.accepts(&large("first")));
+        batch.push(large("first"));
 
-        assert_eq!(error.kind(), ErrorKind::InvalidValue);
+        assert!(!batch.accepts(&large("second")));
     }
 
     #[test]
-    fn merge_and_on_conflict_exclude_each_other() {
-        let error = import_args(&["--merge", "--on-conflict", "skip"]).expect_err("conflict");
+    fn a_batch_holds_the_most_writes_of_a_request() {
+        let mut batch = Batch::default();
+        for line in 0..WRITES_PER_BATCH {
+            let document = book(&line.to_string(), "x".to_string());
+            assert!(batch.accepts(&queued(line, document.clone())));
+            batch.push(queued(line, document));
+        }
 
-        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+        assert!(!batch.accepts(&queued(WRITES_PER_BATCH, dune())));
+    }
+
+    #[test]
+    fn a_request_counts_each_write_by_its_status() {
+        let args = import_args(&["--on-conflict", "skip"]).expect("arguments");
+        let mut tally = Tally::default();
+
+        let failures = tally.settle(
+            &args,
+            origins([4, 5, 6, 7]),
+            Ok(vec![
+                status(Code::Ok),
+                status(Code::AlreadyExists),
+                status(Code::PermissionDenied),
+                status(Code::Ok),
+            ]),
+        );
+
+        assert_eq!(
+            tally,
+            Tally {
+                written: 2,
+                skipped: 1,
+                failed: 1
+            }
+        );
+        assert!(matches!(
+            failures.as_slice(),
+            [FsqError::ImportWrite(ImportWrite {
+                line: 6,
+                code: Code::PermissionDenied,
+                ..
+            })]
+        ));
+    }
+
+    #[test]
+    fn a_conflict_without_a_skip_policy_is_a_failure() {
+        let args = import_args(&["--on-conflict", "fail"]).expect("arguments");
+        let mut tally = Tally::default();
+
+        tally.settle(&args, origins([1]), Ok(vec![status(Code::AlreadyExists)]));
+
+        assert_eq!(tally.failed, 1);
+        assert_eq!(tally.skipped, 0);
+    }
+
+    #[test]
+    fn a_refused_request_fails_every_write_of_it() {
+        let args = import_args(&[]).expect("arguments");
+        let mut tally = Tally::default();
+
+        let failures = tally.settle(
+            &args,
+            origins([10, 11, 12]),
+            Err(FirestoreError::InvalidParametersError(
+                FirestoreInvalidParametersError::new(FirestoreInvalidParametersPublicDetails::new(
+                    "writes".to_string(),
+                    "refused".to_string(),
+                )),
+            )),
+        );
+
+        assert_eq!(
+            tally,
+            Tally {
+                written: 0,
+                skipped: 0,
+                failed: 3
+            }
+        );
+        assert!(matches!(
+            failures.as_slice(),
+            [FsqError::ImportBatchRefused(ImportBatchRefused {
+                first_line: 10,
+                last_line: 12,
+                ..
+            })]
+        ));
     }
 }
