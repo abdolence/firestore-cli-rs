@@ -301,6 +301,37 @@ fn import_without_keep_going_names_every_document_of_the_request_that_failed() {
 }
 
 #[test]
+fn x_full_shows_every_field_of_a_row_and_a_script_gets_no_hint() {
+    let collection = unique_name("fsq-live-detail");
+    let _cleanup = Collections(vec![collection.clone()]);
+    let document = format!(
+        "{{\"__name__\":\"{collection}/dune\",\"title\":\"Dune\",\
+         \"address\":{{\"city\":\"London\",\"zip\":\"N1 9GU\"}},\"tags\":[\"sf\",\"classic\"]}}\n"
+    );
+    assert!(fsq(&["import", "-"], &document).succeeded);
+    let select = format!("SELECT * FROM `{collection}`;\n");
+
+    let table = fsq(&[], &select);
+    assert!(table.succeeded, "{}", table.stderr);
+    assert!(table.stdout.contains("{city, zip}"));
+    assert!(!table.stdout.contains("\\x full") && !table.stderr.contains("\\x full"));
+
+    for script in [
+        format!("\\x full\n{select}"),
+        format!("{select}\\x full 1\n"),
+    ] {
+        let detail = fsq(&[], &script);
+        assert!(detail.succeeded, "{}", detail.stderr);
+        for path in ["address.city", "tags[1]", "__update_time__"] {
+            assert!(detail.stdout.contains(path), "{path}:\n{}", detail.stdout);
+        }
+    }
+
+    let beyond = fsq(&[], &format!("{select}\\x full 2\n"));
+    assert!(!beyond.succeeded);
+}
+
+#[test]
 fn a_failed_statement_of_a_script_is_named() {
     let run = fsq(
         &["sql", "-e", "SHOW COLLECTIONS; SELECT marker_field FROM"],

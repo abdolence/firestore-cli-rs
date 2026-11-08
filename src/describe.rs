@@ -2,14 +2,15 @@ use crate::connection::Connection;
 use crate::errors::{
     is_pipeline_refusal, FsqError, FsqResult, InvalidCollectionPath, InvalidSampleSize,
 };
-use crate::render::{Cell, Grid};
+use crate::field_path::FieldPath;
+use crate::render::{type_name, Cell, Grid};
 use crate::walk::Walk;
 use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
 use firestore::{
     FirestoreCollectionId, FirestoreCollectionSource, FirestoreDocument, FirestorePipeline,
     FirestorePipelineSource, FirestorePipelineStage, FirestoreResult, FirestoreSampleSize,
-    FirestoreSampleStage, FirestoreSqlFieldName,
+    FirestoreSampleStage,
 };
 use futures::{StreamExt, TryStreamExt};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -221,16 +222,13 @@ impl Description {
         self.documents += 1;
         self.top_level_fields
             .extend(document.fields.keys().cloned());
-        self.add_fields(None, &document.fields);
+        self.add_fields(&FieldPath::default(), &document.fields);
     }
 
-    fn add_fields(&mut self, prefix: Option<&str>, fields: &HashMap<String, Value>) {
+    fn add_fields(&mut self, prefix: &FieldPath, fields: &HashMap<String, Value>) {
         for (name, value) in fields {
-            let path = match prefix {
-                Some(prefix) => format!("{prefix}.{}", FirestoreSqlFieldName::from(name.as_str())),
-                None => FirestoreSqlFieldName::from(name.as_str()).to_string(),
-            };
-            let summary = self.fields.entry(path.clone()).or_default();
+            let path = prefix.field(name);
+            let summary = self.fields.entry(path.to_string()).or_default();
             summary.types.insert(type_name(value));
             summary.documents_with_it += 1;
             let is_null =
@@ -243,7 +241,7 @@ impl Description {
                 summary.example = Some(value.clone());
             }
             if let Some(ValueType::MapValue(map)) = &value.value_type {
-                self.add_fields(Some(&path), &map.fields);
+                self.add_fields(&path, &map.fields);
             }
         }
     }
@@ -264,30 +262,6 @@ impl Description {
             ]);
         }
         grid
-    }
-}
-
-/// Names the type of a value as `\d` lists it. An expression value is one that a pipeline takes
-/// as input and never returns in a document.
-fn type_name(value: &Value) -> &'static str {
-    match &value.value_type {
-        None | Some(ValueType::NullValue(_)) => "null",
-        Some(ValueType::BooleanValue(_)) => "boolean",
-        Some(ValueType::IntegerValue(_)) => "integer",
-        Some(ValueType::DoubleValue(_)) => "double",
-        Some(ValueType::TimestampValue(_)) => "timestamp",
-        Some(ValueType::StringValue(_)) => "string",
-        Some(ValueType::BytesValue(_)) => "bytes",
-        Some(ValueType::ReferenceValue(_)) => "reference",
-        Some(ValueType::GeoPointValue(_)) => "geopoint",
-        Some(ValueType::ArrayValue(_)) => "array",
-        Some(ValueType::MapValue(_)) => "map",
-        Some(
-            ValueType::FieldReferenceValue(_)
-            | ValueType::VariableReferenceValue(_)
-            | ValueType::FunctionValue(_)
-            | ValueType::PipelineValue(_),
-        ) => "expression",
     }
 }
 

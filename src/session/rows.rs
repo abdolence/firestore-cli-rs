@@ -1,13 +1,14 @@
 use super::{Interaction, Session};
-use crate::errors::FsqResult;
+use crate::errors::{FsqError, FsqResult, RowOutOfRange};
 use crate::meta::Switch;
-use crate::render::{counted, Footer, FooterNote, Grid, OutputFormat, QueryPlan};
+use crate::render::{counted, Footer, FooterNote, Grid, OutputFormat, QueryPlan, View};
 use firestore::{
     FirestoreDocument, FirestoreExpr, FirestorePipelineExplainStats, FirestorePipelineStage,
     FirestoreResult, FirestoreSqlStatement, FirestoreWithPipelineMetadata,
 };
 use futures::stream::{BoxStream, Peekable};
 use futures::StreamExt;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
@@ -75,6 +76,53 @@ pub(super) struct RowPages<'b> {
 pub(super) struct RowPage {
     pub documents: Vec<FirestoreDocument>,
     pub more: bool,
+}
+
+/// The rows the last `SELECT` or `EXPLAIN` showed, kept for `\x full N`.
+#[derive(Debug, Default)]
+pub(super) struct LastResult(Option<ShownRows>);
+
+#[derive(Debug)]
+struct ShownRows {
+    documents: Vec<FirestoreDocument>,
+    column_order: Vec<String>,
+}
+
+impl LastResult {
+    /// Forgets the rows of the previous result and starts one that has none yet.
+    pub fn begin(&mut self, column_order: Vec<String>) {
+        self.0 = Some(ShownRows {
+            documents: Vec::new(),
+            column_order,
+        });
+    }
+
+    pub fn extend(&mut self, documents: &[FirestoreDocument]) {
+        if let Some(shown) = &mut self.0 {
+            shown.documents.extend_from_slice(documents);
+        }
+    }
+
+    /// The rows from `first` (counting from 0) to the last one shown, and the order of the
+    /// columns the statement selected them in.
+    pub fn rows_from(&self, first: usize) -> (&[FirestoreDocument], &[String]) {
+        match &self.0 {
+            Some(shown) => (&shown.documents[first..], &shown.column_order),
+            None => (&[], &[]),
+        }
+    }
+
+    /// Row `number` of the result, counting from 1.
+    pub fn row(&self, number: NonZeroUsize) -> FsqResult<(&[FirestoreDocument], &[String])> {
+        let shown = self.0.as_ref().ok_or(FsqError::NoRowsToShow)?;
+        let document = shown.documents.get(number.get() - 1).ok_or_else(|| {
+            FsqError::RowOutOfRange(RowOutOfRange {
+                row: number,
+                rows: shown.documents.len(),
+            })
+        })?;
+        Ok((std::slice::from_ref(document), &shown.column_order))
+    }
 }
 
 impl<'b> RowPages<'b> {
@@ -146,6 +194,7 @@ impl Session {
         let shape = ResultShape::from(statement);
         let explains = matches!(statement, FirestoreSqlStatement::Explain(_));
         let page_size = self.page_size(&shape);
+        self.last_result.begin(shape.column_order.clone());
         let mut pages = RowPages::new(rows);
         let mut shown = 0;
         let mut waiting_for_reader = Duration::ZERO;
@@ -153,10 +202,15 @@ impl Session {
             let page = self
                 .waiting("waiting for rows", pages.next_page(page_size))
                 .await??;
+            let first_of_page = shown;
             shown += page.documents.len();
+            self.last_result.extend(&page.documents);
             let grid = Grid::from_documents(page.documents, &shape.column_order);
             self.remember_fields(&grid);
             let view = self.view();
+            let (page_documents, column_order) = self.last_result.rows_from(first_of_page);
+            let rows_text = view.rows(&grid, page_documents, first_of_page + 1, column_order);
+            let hint = self.detail_hint(&view, &grid);
             let elapsed = started.elapsed().saturating_sub(waiting_for_reader);
             if page.more {
                 let footer = Footer {
@@ -164,7 +218,8 @@ impl Session {
                     elapsed,
                     notes: vec![FooterNote::MorePages],
                 };
-                self.print_grids(&[("", &grid)], &footer)?;
+                self.output
+                    .print(&format!("{rows_text}{}{hint}", view.footer(&footer)))?;
                 let asked = Instant::now();
                 let continues = self.output.ask_for_more(&self.theme)?;
                 waiting_for_reader += asked.elapsed();
@@ -190,18 +245,28 @@ impl Session {
                 }
                 (Some(plan), true) => {
                     if !grid.is_empty() {
-                        text.push_str(&view.grid(&grid));
+                        text.push_str(&rows_text);
                     }
                     text.push_str(&view.plan(plan));
                 }
                 (None, true) => {
                     self.output.notice("Firestore returned no plan.")?;
-                    text.push_str(&view.grid(&grid));
+                    text.push_str(&rows_text);
                 }
-                (_, false) => text.push_str(&view.grid(&grid)),
+                (_, false) => text.push_str(&rows_text),
             }
             text.push_str(&view.footer(&footer));
+            text.push_str(&hint);
             return self.output.print(&text);
+        }
+    }
+
+    /// The hint under a page of rows that `\x full N` shows more of. Only a person at the
+    /// keyboard reads it, so scripts and piped input never get one.
+    fn detail_hint(&self, view: &View<'_>, grid: &Grid) -> String {
+        match self.interaction {
+            Interaction::Repl => view.detail_hint(grid),
+            Interaction::Script => String::new(),
         }
     }
 
@@ -324,6 +389,69 @@ mod tests {
             )),
             None => pipeline,
         }
+    }
+
+    fn shown(ids: &[&str]) -> LastResult {
+        let mut last = LastResult::default();
+        last.begin(vec!["title".to_string()]);
+        let documents: Vec<_> = ids
+            .iter()
+            .map(|id| document(id, vec![("title", string(id))]))
+            .collect();
+        last.extend(&documents);
+        last
+    }
+
+    fn row_number(number: usize) -> NonZeroUsize {
+        NonZeroUsize::new(number).expect("a row number")
+    }
+
+    #[test]
+    fn a_row_of_the_last_result_is_the_one_at_that_position_counting_from_one() {
+        let last = shown(&["a", "b", "c"]);
+
+        let (documents, order) = last.row(row_number(2)).expect("row 2");
+
+        assert_eq!(documents.len(), 1);
+        assert!(documents[0].name.ends_with("/b"));
+        assert_eq!(order, ["title".to_string()]);
+    }
+
+    #[test]
+    fn a_row_past_the_end_of_the_last_result_is_out_of_range() {
+        let last = shown(&["a", "b"]);
+
+        assert!(matches!(
+            last.row(row_number(3)),
+            Err(FsqError::RowOutOfRange(RowOutOfRange { row, rows: 2 })) if row == row_number(3)
+        ));
+    }
+
+    #[test]
+    fn a_result_without_rows_has_no_row_one() {
+        assert!(matches!(
+            shown(&[]).row(row_number(1)),
+            Err(FsqError::RowOutOfRange(RowOutOfRange { rows: 0, .. }))
+        ));
+    }
+
+    #[test]
+    fn without_a_result_there_is_no_row_to_show() {
+        assert!(matches!(
+            LastResult::default().row(row_number(1)),
+            Err(FsqError::NoRowsToShow)
+        ));
+    }
+
+    #[test]
+    fn a_new_result_replaces_the_rows_of_the_last_one() {
+        let mut last = shown(&["a", "b"]);
+
+        last.begin(Vec::new());
+        last.extend(&[document("c", vec![])]);
+
+        assert!(last.row(row_number(2)).is_err());
+        assert!(last.row(row_number(1)).is_ok());
     }
 
     #[test]

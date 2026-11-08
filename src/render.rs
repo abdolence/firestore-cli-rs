@@ -2,6 +2,7 @@
 //! once, through the pager when it is taller than the terminal.
 
 mod cut;
+mod detail;
 mod fit;
 #[cfg(test)]
 pub mod fixtures;
@@ -22,6 +23,7 @@ pub use index_changes::*;
 pub use output::*;
 pub use plan::*;
 pub use spinner::*;
+pub use value::type_name;
 
 use clap::ValueEnum;
 use console::Style;
@@ -63,6 +65,8 @@ pub enum ExpandedMode {
     Off,
     On,
     Auto,
+    /// Every field of every document, one row per leaf value, with its type and its whole value.
+    Full,
 }
 
 impl ExpandedMode {
@@ -72,6 +76,7 @@ impl ExpandedMode {
             "on" => Some(Self::On),
             "off" => Some(Self::Off),
             "auto" => Some(Self::Auto),
+            "full" => Some(Self::Full),
             _ => None,
         }
     }
@@ -83,6 +88,7 @@ impl std::fmt::Display for ExpandedMode {
             Self::Off => "off",
             Self::On => "on",
             Self::Auto => "auto",
+            Self::Full => "full",
         })
     }
 }

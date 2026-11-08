@@ -15,8 +15,7 @@ impl View<'_> {
         match &value.value_type {
             None | Some(ValueType::NullValue(_)) => theme.null.apply_to("NULL").to_string(),
             Some(ValueType::StringValue(text)) => {
-                let flat: String = text.chars().map(single_line_char).collect();
-                theme.string.apply_to(cut(&flat)).to_string()
+                theme.string.apply_to(cut(&single_line(text))).to_string()
             }
             Some(ValueType::ArrayValue(array)) => {
                 let summary = match array.values.len() {
@@ -157,10 +156,52 @@ impl Display for TimestampText<'_> {
     }
 }
 
-fn sorted_keys(fields: &HashMap<String, Value>) -> Vec<&String> {
+pub(super) fn sorted_keys(fields: &HashMap<String, Value>) -> Vec<&String> {
     let mut keys: Vec<&String> = fields.keys().collect();
     keys.sort();
     keys
+}
+
+fn single_line(text: &str) -> String {
+    text.chars().map(single_line_char).collect()
+}
+
+/// Whether the compact form of `value` leaves something out that the detail view shows: a string
+/// it cuts, the contents of a map, an array or bytes.
+pub(super) fn is_summarised(value: &Value) -> bool {
+    match &value.value_type {
+        Some(ValueType::StringValue(text)) => {
+            console::measure_text_width(&single_line(text)) > CELL_TEXT_LIMIT
+        }
+        Some(ValueType::ArrayValue(array)) => !array.values.is_empty(),
+        Some(ValueType::MapValue(map)) => !map.fields.is_empty(),
+        Some(ValueType::BytesValue(_)) => true,
+        _ => false,
+    }
+}
+
+/// Names the type of a value as `\d` and the detail view list it. An expression value is one
+/// that a pipeline takes as input and never returns in a document.
+pub fn type_name(value: &Value) -> &'static str {
+    match &value.value_type {
+        None | Some(ValueType::NullValue(_)) => "null",
+        Some(ValueType::BooleanValue(_)) => "boolean",
+        Some(ValueType::IntegerValue(_)) => "integer",
+        Some(ValueType::DoubleValue(_)) => "double",
+        Some(ValueType::TimestampValue(_)) => "timestamp",
+        Some(ValueType::StringValue(_)) => "string",
+        Some(ValueType::BytesValue(_)) => "bytes",
+        Some(ValueType::ReferenceValue(_)) => "reference",
+        Some(ValueType::GeoPointValue(_)) => "geopoint",
+        Some(ValueType::ArrayValue(_)) => "array",
+        Some(ValueType::MapValue(_)) => "map",
+        Some(
+            ValueType::FieldReferenceValue(_)
+            | ValueType::VariableReferenceValue(_)
+            | ValueType::FunctionValue(_)
+            | ValueType::PipelineValue(_),
+        ) => "expression",
+    }
 }
 
 fn single_line_char(c: char) -> char {

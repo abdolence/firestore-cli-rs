@@ -14,8 +14,10 @@ use crate::render::{
 };
 use crate::script::{Input, Script};
 use firestore::{FirestoreCollectionId, FirestoreSqlOutcome};
+use rows::LastResult;
 use std::collections::BTreeSet;
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::task::JoinHandle;
@@ -65,6 +67,8 @@ pub struct Session {
     interaction: Interaction,
     /// The text of the last `SELECT` that ran, for `\gen` without one.
     last_select: Option<String>,
+    /// The rows of the last result, for `\x full N`.
+    last_result: LastResult,
     /// The task that lists the root collections for completion while the prompt is already open.
     collections_loading: Option<JoinHandle<()>>,
 }
@@ -80,6 +84,7 @@ impl Session {
             output,
             interaction,
             last_select: None,
+            last_result: LastResult::default(),
             collections_loading: None,
         }
     }
@@ -128,10 +133,11 @@ impl Session {
             MetaCommand::ListCollections(None) => self.run_statement("SHOW COLLECTIONS").await?,
             MetaCommand::ListCollections(Some(target)) => self.list_collection_tree(target).await?,
             MetaCommand::Describe(target) => self.describe(&target).await?,
+            MetaCommand::ExpandedRow(row) => self.show_row(row)?,
             MetaCommand::Expanded(mode) => {
                 self.settings.expanded = mode.unwrap_or(match self.settings.expanded {
                     ExpandedMode::Off => ExpandedMode::On,
-                    ExpandedMode::On | ExpandedMode::Auto => ExpandedMode::Off,
+                    ExpandedMode::On | ExpandedMode::Auto | ExpandedMode::Full => ExpandedMode::Off,
                 });
                 self.output
                     .notice(&format!("Expanded display is {}.", self.settings.expanded))?;
@@ -239,6 +245,13 @@ impl Session {
                 .collect(),
         };
         self.print_grids(&[("", &grid)], &footer)
+    }
+
+    /// Prints row `number` of the last result in the expanded view without running anything.
+    fn show_row(&self, number: NonZeroUsize) -> FsqResult<()> {
+        let (documents, column_order) = self.last_result.row(number)?;
+        self.output
+            .print(&self.view().details(documents, number.get(), column_order))
     }
 
     /// Prints the grids of a statement and its footer in one write.

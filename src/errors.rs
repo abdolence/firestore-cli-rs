@@ -1,9 +1,10 @@
+use crate::render::counted;
 use crate::script::Input;
 use firestore::errors::FirestoreError;
 use firestore::gcloud_sdk::tonic::Code;
 use firestore::FirestoreCollectionId;
 use std::fmt::{Display, Formatter};
-use std::num::ParseIntError;
+use std::num::{NonZeroUsize, ParseIntError};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -45,6 +46,10 @@ pub enum FsqError {
     InvalidParameter(InvalidParameter),
     #[error("no SELECT has run yet: give \\gen one")]
     NoSelectToGenerate,
+    #[error("no rows have been shown yet, so there is no row to show")]
+    NoRowsToShow,
+    #[error(transparent)]
+    RowOutOfRange(RowOutOfRange),
     #[error(transparent)]
     FileAccessFailed(FileAccessFailed),
     #[error("export needs a collection or --sql")]
@@ -112,6 +117,13 @@ pub struct InvalidMetaArgument {
     pub command: &'static str,
     pub argument: String,
     pub expected: &'static str,
+}
+
+#[derive(Debug, Error)]
+#[error("row {row} is out of range: the last result has {}", counted(*.rows, "row", "rows"))]
+pub struct RowOutOfRange {
+    pub row: NonZeroUsize,
+    pub rows: usize,
 }
 
 #[derive(Debug, Error)]

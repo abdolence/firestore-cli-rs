@@ -5,6 +5,7 @@ use crate::describe::DescribeTarget;
 use crate::errors::{FsqError, FsqResult, UnclosedQuote, UnknownMetaCommand};
 use crate::render::{ExpandedMode, TableText, Theme};
 use clap::{Args, Command, FromArgMatches};
+use std::num::NonZeroUsize;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -16,6 +17,8 @@ pub enum MetaCommand {
     Describe(DescribeTarget),
     /// `\x` without an argument toggles between the table and the expanded view.
     Expanded(Option<ExpandedMode>),
+    /// `\x full N`: row `N` of the last result in the expanded view, counting from 1.
+    ExpandedRow(NonZeroUsize),
     Connect(DatabaseId),
     /// Without an argument, toggles.
     Timing(Option<Switch>),
@@ -72,8 +75,8 @@ pub const META_COMMANDS: &[MetaCommandHelp] = &[
         summary: "list a collection's field paths, types, % present and an example",
     },
     MetaCommandHelp {
-        usage: "\\x [on|off|auto]",
-        summary: "expanded view, one block per document; auto when a table is too wide",
+        usage: "\\x [on|off|auto|full [N]]",
+        summary: "expanded view, one block per document; auto when a table is too wide; full shows every field with its type and whole value, and full N shows row N of the last result",
     },
     MetaCommandHelp {
         usage: "\\c <database>",
@@ -137,12 +140,19 @@ impl FromStr for MetaCommand {
                 Self::ListCollections(recursive.then_some(target))
             }
             "\\d" => Self::Describe(parse_arguments("\\d", rest)?),
-            "\\x" => Self::Expanded(optional_argument(
-                "\\x",
-                rest,
-                "on, off or auto",
-                ExpandedMode::from_argument,
-            )?),
+            "\\x" => match rest.split_whitespace().collect::<Vec<_>>().as_slice() {
+                [full, row] if full.eq_ignore_ascii_case("full") => {
+                    Self::ExpandedRow(row.parse().map_err(|_| {
+                        FsqError::invalid_meta_argument("\\x", row, "a row number, counting from 1")
+                    })?)
+                }
+                _ => Self::Expanded(optional_argument(
+                    "\\x",
+                    rest,
+                    "on, off, auto or full",
+                    ExpandedMode::from_argument,
+                )?),
+            },
             "\\c" => match rest.split_whitespace().collect::<Vec<_>>().as_slice() {
                 [database] => Self::Connect(DatabaseId::from(*database)),
                 [] => return Err(FsqError::missing_meta_argument("\\c", "a database ID")),
@@ -281,6 +291,10 @@ mod tests {
             parsed("\\x auto"),
             MetaCommand::Expanded(Some(ExpandedMode::Auto))
         );
+        assert_eq!(
+            parsed("\\x FULL"),
+            MetaCommand::Expanded(Some(ExpandedMode::Full))
+        );
         assert_eq!(parsed("\\timing on"), MetaCommand::Timing(Some(Switch::On)));
         assert_eq!(parsed("\\wait OFF"), MetaCommand::Wait(Some(Switch::Off)));
         assert_eq!(
@@ -383,6 +397,26 @@ mod tests {
             "\\frobnicate".parse::<MetaCommand>(),
             Err(FsqError::UnknownMetaCommand(UnknownMetaCommand { command })) if command == "\\frobnicate"
         ));
+    }
+
+    #[test]
+    fn x_full_with_a_row_number_shows_that_row() {
+        assert_eq!(
+            parsed("\\x full 12"),
+            MetaCommand::ExpandedRow(NonZeroUsize::new(12).expect("non-zero"))
+        );
+    }
+
+    #[test]
+    fn x_full_takes_a_row_counted_from_one() {
+        for argument in ["0", "-1", "two", "1 2"] {
+            match format!("\\x full {argument}").parse::<MetaCommand>() {
+                Err(FsqError::InvalidMetaArgument(InvalidMetaArgument { command, .. })) => {
+                    assert_eq!(command, "\\x")
+                }
+                other => panic!("{argument}: {other:?}"),
+            }
+        }
     }
 
     #[test]

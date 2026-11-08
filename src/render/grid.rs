@@ -1,4 +1,5 @@
 use super::fit::TableText;
+use super::value::is_summarised;
 use super::{ExpandedMode, OutputFormat, View};
 use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
@@ -60,6 +61,14 @@ impl Grid {
         self.rows.is_empty()
     }
 
+    fn has_summarised_value(&self) -> bool {
+        self.rows
+            .iter()
+            .flatten()
+            .flatten()
+            .any(|cell| matches!(cell, Cell::Value(value) if is_summarised(value)))
+    }
+
     /// One row per document, under the union of their fields. Firestore returns a document's
     /// fields unordered, so the columns come in `order`, the order the statement selects them in,
     /// and then by name, with the document name first when the documents have one.
@@ -73,12 +82,7 @@ impl Grid {
             .then(|| NAME_COLUMN.to_string())
             .into_iter()
             .collect();
-        for name in order {
-            if fields.remove(name) {
-                columns.push(name.clone());
-            }
-        }
-        columns.extend(fields);
+        columns.extend(in_selected_order(fields, order));
         let rows = documents
             .into_iter()
             .map(|mut document| {
@@ -99,6 +103,17 @@ impl Grid {
             .collect();
         Self { columns, rows }
     }
+}
+
+/// The field names in the order a statement selects them in, `order`, and then by name.
+pub(super) fn in_selected_order(mut fields: BTreeSet<String>, order: &[String]) -> Vec<String> {
+    let mut names: Vec<String> = order
+        .iter()
+        .filter(|name| fields.remove(*name))
+        .cloned()
+        .collect();
+    names.extend(fields);
+    names
 }
 
 impl View<'_> {
@@ -156,7 +171,7 @@ impl View<'_> {
         }
         match self.expanded {
             ExpandedMode::On => self.expanded_text(grid),
-            ExpandedMode::Off => {
+            ExpandedMode::Off | ExpandedMode::Full => {
                 let mut cells = self.table_cells(grid);
                 if let Some(width) = self.width {
                     cells.fit_to(width);
@@ -171,6 +186,35 @@ impl View<'_> {
                 }
             }
         }
+    }
+
+    /// The hint that `\x full N` shows what a table of `grid` left out, or nothing when the table
+    /// showed everything.
+    pub fn detail_hint(&self, grid: &Grid) -> String {
+        if self.format != OutputFormat::Table || !self.table_hides_detail(grid) {
+            return String::new();
+        }
+        format!(
+            "{}\n",
+            self.theme
+                .muted
+                .apply_to("\\x full N shows every field of row N")
+        )
+    }
+
+    /// Whether the table drawn for `grid` cuts a cell or summarises a value. A result drawn as
+    /// records, or in the detail view, shows every value whole.
+    fn table_hides_detail(&self, grid: &Grid) -> bool {
+        match self.expanded {
+            ExpandedMode::On | ExpandedMode::Full => false,
+            ExpandedMode::Off => grid.has_summarised_value() || self.wider_than_terminal(grid),
+            ExpandedMode::Auto => !self.wider_than_terminal(grid) && grid.has_summarised_value(),
+        }
+    }
+
+    fn wider_than_terminal(&self, grid: &Grid) -> bool {
+        self.width
+            .is_some_and(|width| self.table_cells(grid).width() > width)
     }
 
     fn table_cells(&self, grid: &Grid) -> TableText {
@@ -518,6 +562,91 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&json).expect("JSON"),
             serde_json::json!({"indexes": [{"id": 1}], "fields": []})
         );
+    }
+
+    fn grid_of(fields: Vec<(&str, Value)>) -> Grid {
+        Grid::from_documents(vec![document("dune", fields)], &[])
+    }
+
+    fn hinted(grid: &Grid, expanded: ExpandedMode, width: Option<usize>) -> bool {
+        let theme = Theme::new(false);
+        let hint = View {
+            width,
+            ..view(&theme, OutputFormat::Table, expanded)
+        }
+        .detail_hint(grid);
+        !hint.is_empty()
+    }
+
+    #[test]
+    fn a_table_that_showed_every_value_whole_has_no_hint() {
+        let grid = grid_of(vec![
+            ("title", string("Dune")),
+            ("rating", value(ValueType::DoubleValue(4.5))),
+            ("forty", string(&"x".repeat(40))),
+            ("empty_map", value(ValueType::MapValue(MapValue::default()))),
+            (
+                "empty_array",
+                value(ValueType::ArrayValue(ArrayValue::default())),
+            ),
+        ]);
+
+        assert!(!hinted(&grid, ExpandedMode::Off, Some(400)));
+        assert!(!hinted(&grid, ExpandedMode::Off, None));
+    }
+
+    #[test]
+    fn a_table_hides_detail_when_a_cell_is_cut_or_only_summarises_its_value() {
+        let nested = value(ValueType::MapValue(MapValue {
+            fields: HashMap::from([("city".to_string(), string("London"))]),
+        }));
+        let list = value(ValueType::ArrayValue(ArrayValue {
+            values: vec![string("sf")],
+        }));
+        for hidden in [
+            string(&"x".repeat(41)),
+            nested,
+            list,
+            value(ValueType::BytesValue(vec![1, 2, 3])),
+        ] {
+            let grid = grid_of(vec![("title", string("Dune")), ("field", hidden)]);
+
+            assert!(hinted(&grid, ExpandedMode::Off, None), "{grid:?}");
+        }
+    }
+
+    #[test]
+    fn a_table_cut_to_fit_the_terminal_has_a_hint_and_one_that_fits_has_none() {
+        let grid = grid_of(vec![
+            ("title", string("Dune")),
+            ("author", string("Frank Herbert of Dune")),
+        ]);
+
+        assert!(hinted(&grid, ExpandedMode::Off, Some(20)));
+        assert!(!hinted(&grid, ExpandedMode::Off, Some(80)));
+    }
+
+    #[test]
+    fn a_result_drawn_as_records_whole_has_no_hint() {
+        let grid = grid_of(vec![("author", string(&"x".repeat(60)))]);
+
+        assert!(hinted(&grid, ExpandedMode::Auto, Some(80)));
+        assert!(!hinted(&grid, ExpandedMode::Auto, Some(20)));
+        assert!(!hinted(&grid, ExpandedMode::On, Some(80)));
+        assert!(!hinted(&grid, ExpandedMode::Full, Some(80)));
+    }
+
+    #[test]
+    fn json_output_has_no_hint() {
+        let grid = grid_of(vec![("author", string(&"x".repeat(60)))]);
+        let theme = Theme::new(false);
+
+        for format in [OutputFormat::Json, OutputFormat::Jsonl] {
+            assert_eq!(
+                view(&theme, format, ExpandedMode::Off).detail_hint(&grid),
+                ""
+            );
+        }
     }
 
     const TABLE: &str = r#"╭─────────────┬──────────┬─────────────┬─────────────────┬──────────────────────────────────────────┬─────────┬──────────┬───────────────┬───────┬──────────────────────┬────────┬──────────┬───────────╮

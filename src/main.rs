@@ -5,6 +5,7 @@ mod connection;
 mod describe;
 mod errors;
 mod export;
+mod field_path;
 mod import;
 mod index_command;
 mod index_file;

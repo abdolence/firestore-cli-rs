@@ -1,10 +1,11 @@
 use super::cut_middle;
-use comfy_table::{presets, Cell as TableCell, ContentArrangement, Table};
+use comfy_table::{presets, Cell as TableCell, ContentArrangement, Table, TableStyle};
 
 /// What the table preset adds around every column: a space on each side and a separator.
 const COLUMN_FRAME_WIDTH: usize = 3;
 /// The border that closes the table, beside the separators.
 const TABLE_FRAME_WIDTH: usize = 1;
+const ROUNDED_BORDERS: TableStyle = presets::UTF8_FULL_CONDENSED.with_rounded_corners();
 /// The narrowest a column is cut to when the headers alone do not fit the terminal.
 const MIN_COLUMN_WIDTH: usize = 1;
 
@@ -46,21 +47,35 @@ impl TableText {
     }
 
     pub fn into_table(self) -> Table {
-        self.table(ContentArrangement::Disabled)
+        self.table(ContentArrangement::Disabled, ROUNDED_BORDERS)
     }
 
     /// The table within `width` columns, wrapping a cell at its spaces where [`Self::fit_to`]
     /// would cut it, for text that has to stay whole.
     pub fn into_wrapped_table(self, width: usize) -> Table {
-        let mut table = self.table(ContentArrangement::Dynamic);
+        let mut table = self.table(ContentArrangement::Dynamic, ROUNDED_BORDERS);
         table.set_width(u16::try_from(width).unwrap_or(u16::MAX));
         table
     }
 
-    fn table(self, arrangement: ContentArrangement) -> Table {
+    /// The columns separated by space alone. With a `width` a cell wraps inside its column,
+    /// breaking a word that is longer than the column, and nothing is cut.
+    pub fn into_borderless_table(self, width: Option<usize>) -> Table {
+        let arrangement = match width {
+            Some(_) => ContentArrangement::Dynamic,
+            None => ContentArrangement::Disabled,
+        };
+        let mut table = self.table(arrangement, presets::NOTHING);
+        if let Some(width) = width {
+            table.set_width(u16::try_from(width).unwrap_or(u16::MAX));
+        }
+        table
+    }
+
+    fn table(self, arrangement: ContentArrangement, style: TableStyle) -> Table {
         let mut table = Table::new();
         table
-            .load_style(presets::UTF8_FULL_CONDENSED.with_rounded_corners())
+            .load_style(style)
             .set_content_arrangement(arrangement)
             .set_header(self.header.into_iter().map(TableCell::new));
         for row in self.rows {

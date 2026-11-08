@@ -11,7 +11,7 @@ crate, which translates SQL into Firestore pipelines.
 ## Features
 
 * **SQL REPL:** highlighting, completion of collections and fields, statements across several lines and a history;
-* **Results as tables:** nested values in compact cells, and an expanded view with one block per document;
+* **Results as tables:** nested values in compact cells, an expanded view with one block per document, and a detail view with the path, type and whole value of every field;
 * **Query plans:** `EXPLAIN` draws the plan as a coloured tree, with a warning when it reads every document of the
   collection;
 * **Index statements:** `CREATE INDEX`, `DROP INDEX`, `ALTER COLLECTION` and `SHOW INDEXES`, waiting for an index
@@ -128,7 +128,7 @@ A statement ends with `;` and can span several lines. A line that starts with `\
 |---|---|
 | `\l [--recursive [--depth N] [--sample K]]` | lists the collections under the root, as `SHOW COLLECTIONS` does; with `--recursive` also the subcollections, see [Listing subcollections](#listing-subcollections) |
 | `\d <collection> [--sample N]` | lists the field paths of a collection, see [Describing a collection](#describing-a-collection) |
-| `\x [on\|off\|auto]` | switches the expanded view; without an argument toggles it |
+| `\x [on\|off\|auto\|full [N]]` | switches the expanded view, without an argument toggles it; `full` shows every field of every document, and `full N` row N of the last result, see [Results](#results) |
 | `\c <database>` | connects to another database of the project |
 | `\timing [on\|off]` | adds the round trip time and the execution stats to the footer |
 | `\wait [on\|off]` | waits for `CREATE INDEX` and `ALTER COLLECTION` to finish, on by default |
@@ -162,6 +162,7 @@ my-project/my-database (enterprise)> SELECT __name__, title, address, tags, publ
 │ books/messiah  ┆ Dune Messiah     ┆             ┆           ┆                      │
 ╰────────────────┴──────────────────┴─────────────┴───────────┴──────────────────────╯
 3 rows · 760 ms
+\x full N shows every field of row N
 ```
 
 * the columns are the union of the fields of the rows shown: `__name__` first when the rows have document names,
@@ -175,13 +176,44 @@ my-project/my-database (enterprise)> SELECT __name__, title, address, tags, publ
 * a statement that returns no documents prints the footer alone, `0 rows`, and `--format json` an empty array;
 * a statement without `LIMIT` shows a page that fits the terminal and asks before the next one. A statement with
   `LIMIT` shows all its rows, and `EXPLAIN` is never paged, since its plan arrives with the last row;
-* the footer shows the rows, the time the statement took and its notes, such as `more rows remain`.
+* the footer shows the rows, the time the statement took and its notes, such as `more rows remain`;
+* in the REPL, the hint `\x full N shows every field of row N` follows the footer when the table cut a cell, showed a
+  map, an array or bytes in summary, or was cut to fit the terminal. A table that showed every value whole has no hint,
+  and neither have a script, piped input or `--format json` and `jsonl`.
 
 `\x` shows each document as a block, with nested values pretty-printed, and `\x auto` does so only for a table wider
 than the terminal. A result taller than the terminal goes through `$PAGER`, or `less -RFX` when it is
 unset; an empty `PAGER` turns the pager off. When `LESS` is not set, fsq sets it to `FRX` for the pager alone, as git
 does, so that `less` keeps the output on screen after `q`, does not page what fits on one screen and shows colours; a
 `LESS` that is set, even to nothing, is left as it is.
+
+`\x full` shows every field of every document, in a block with a row for each value: its path, its type and the whole
+value, wrapped inside the value column at the terminal width and never cut. `\x full N` shows row N of the last
+result, counting from 1 across the pages shown, and runs no statement. It fails when no rows have been shown or the
+result has fewer than N rows.
+
+```
+my-project/my-database (enterprise)> \x full 2
+─[ books/dune ]─────────────────────────────────────────
+ field            type       value
+ title            string     Dune
+ address.city     string     London
+ address.zip      string     N1 9GU
+ tags[0]          string     sf
+ tags[1]          string     classic
+ tags[2]          string     epic
+ published        timestamp  2023-11-14T22:13:20Z
+ __create_time__  timestamp  2026-11-04T17:51:52.549531Z
+ __update_time__  timestamp  2026-11-04T17:51:52.549531Z
+```
+
+* nested maps and arrays are flattened into paths, `address.city` and `tags[0]`, written as SQL reads them, so that a
+  path can be pasted into a `WHERE`; an empty map or array is a row of its own;
+* the types are those `\d` shows, and bytes are shown in base64;
+* the fields come in the order the statement selects them, then by name, and `__create_time__` and `__update_time__`
+  close the block when the result carries them;
+* `\x` without an argument toggles between `off` and `on`, and `\x auto` still expands only a table wider than the
+  terminal.
 
 A call that waits on Firestore for more than a moment shows a spinner on stderr, unless stderr is not a terminal or
 the results are JSON written to a pipe.
