@@ -1,5 +1,5 @@
 use super::grid::in_selected_order;
-use super::value::{sorted_keys, type_name};
+use super::value::{sorted_keys, type_name, vector_components};
 use super::{ExpandedMode, Grid, OutputFormat, TableText, View};
 use crate::field_path::FieldPath;
 use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
@@ -105,10 +105,12 @@ impl View<'_> {
     }
 
     /// Adds a row for every value below `value` that is not a map or an array with something in
-    /// it. An empty map or array is a value of its own.
+    /// it. An empty map or array is a value of its own, and so is a vector.
     fn flatten_into(&self, path: &FieldPath, value: &Value, rows: &mut Vec<Vec<String>>) {
         match &value.value_type {
-            Some(ValueType::MapValue(map)) if !map.fields.is_empty() => {
+            Some(ValueType::MapValue(map))
+                if !map.fields.is_empty() && vector_components(value).is_none() =>
+            {
                 for name in sorted_keys(&map.fields) {
                     self.flatten_into(&path.field(name), &map.fields[name], rows);
                 }
@@ -130,14 +132,25 @@ impl View<'_> {
         ]);
     }
 
-    /// A leaf value as `\x` shows it, with bytes in the base64 of the JSON output rather than
-    /// as a size.
+    /// A leaf value as `\x` shows it: bytes in the base64 of the JSON output rather than as a
+    /// size, and a vector as its components.
     fn whole_value(&self, value: &Value) -> String {
-        match (&value.value_type, self.json_value(value)) {
-            (Some(ValueType::BytesValue(_)), serde_json::Value::String(base64)) => {
-                self.theme.muted.apply_to(base64).to_string()
-            }
-            _ => self.pretty_value(value),
+        match &value.value_type {
+            Some(ValueType::BytesValue(_)) => match self.json_value(value) {
+                serde_json::Value::String(base64) => self.theme.muted.apply_to(base64).to_string(),
+                other => other.to_string(),
+            },
+            _ => match vector_components(value) {
+                Some(components) => {
+                    let components: Vec<String> =
+                        components.iter().map(ToString::to_string).collect();
+                    self.theme
+                        .number
+                        .apply_to(format!("[{}]", components.join(", ")))
+                        .to_string()
+                }
+                None => self.pretty_value(value),
+            },
         }
     }
 }
@@ -145,7 +158,7 @@ impl View<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::fixtures::{document, string, value, DOCUMENTS_PATH};
+    use crate::render::fixtures::{document, string, value, vector, DOCUMENTS_PATH};
     use crate::render::Theme;
     use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
     use firestore::gcloud_sdk::google::firestore::v1::{ArrayValue, MapValue, Value};
@@ -259,6 +272,41 @@ mod tests {
             assert!(plain.contains(&unbroken), "{text}");
             assert!(plain.contains("firstlinesecondline"), "{text}");
         }
+    }
+
+    #[test]
+    fn a_vector_is_one_row_of_type_vector_with_its_components() {
+        let theme = Theme::new(false);
+        let document = document(
+            "dune",
+            vec![
+                ("embedding", vector(&[0.4, 0.2, 0.9])),
+                ("title", string("Dune")),
+            ],
+        );
+
+        let text = view(&theme, None).details(&[document], 1, &[]);
+
+        assert!(
+            text.contains(" embedding  vector  [0.4, 0.2, 0.9]\n"),
+            "{text}"
+        );
+        assert!(!text.contains("__type__"), "{text}");
+    }
+
+    #[test]
+    fn a_map_that_only_resembles_a_vector_is_flattened_as_a_map() {
+        let theme = Theme::new(false);
+        let resembling = map(vec![
+            ("__type__", string("__vector__")),
+            ("value", string("not components")),
+        ]);
+        let document = document("dune", vec![("embedding", resembling)]);
+
+        let text = view(&theme, None).details(&[document], 1, &[]);
+
+        assert!(!text.contains(" vector "), "{text}");
+        assert!(text.contains("embedding.__type__"), "{text}");
     }
 
     #[test]

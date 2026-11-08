@@ -180,6 +180,21 @@ pub(super) fn is_summarised(value: &Value) -> bool {
     }
 }
 
+/// The components of a vector, a map that Firestore stores as a marker and an array of doubles.
+/// The recognition is the firestore crate's, which is not public: the plain JSON encoding
+/// writes a vector as an array and every other map as an object.
+pub(super) fn vector_components(value: &Value) -> Option<Vec<serde_json::Value>> {
+    if !matches!(value.value_type, Some(ValueType::MapValue(_))) {
+        return None;
+    }
+    match FirestoreDb::serialize_value_to_json("", value, FirestoreJsonEncoding::Plain)
+        .expect("the plain encoding has no value it refuses")
+    {
+        serde_json::Value::Array(components) => Some(components),
+        _ => None,
+    }
+}
+
 /// Names the type of a value as `\d` and the detail view list it. An expression value is one
 /// that a pipeline takes as input and never returns in a document.
 pub fn type_name(value: &Value) -> &'static str {
@@ -194,6 +209,7 @@ pub fn type_name(value: &Value) -> &'static str {
         Some(ValueType::ReferenceValue(_)) => "reference",
         Some(ValueType::GeoPointValue(_)) => "geopoint",
         Some(ValueType::ArrayValue(_)) => "array",
+        Some(ValueType::MapValue(_)) if vector_components(value).is_some() => "vector",
         Some(ValueType::MapValue(_)) => "map",
         Some(
             ValueType::FieldReferenceValue(_)

@@ -229,7 +229,8 @@ impl Description {
         for (name, value) in fields {
             let path = prefix.field(name);
             let summary = self.fields.entry(path.to_string()).or_default();
-            summary.types.insert(type_name(value));
+            let kind = type_name(value);
+            summary.types.insert(kind);
             summary.documents_with_it += 1;
             let is_null =
                 |value: &Value| matches!(value.value_type, Some(ValueType::NullValue(_)) | None);
@@ -240,7 +241,7 @@ impl Description {
             {
                 summary.example = Some(value.clone());
             }
-            if let Some(ValueType::MapValue(map)) = &value.value_type {
+            if let (Some(ValueType::MapValue(map)), "map") = (&value.value_type, kind) {
                 self.add_fields(&path, &map.fields);
             }
         }
@@ -268,7 +269,7 @@ impl Description {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::fixtures::{document, draft, dune, string, value};
+    use crate::render::fixtures::{document, draft, dune, string, value, vector};
     use firestore::gcloud_sdk::google::firestore::v1::MapValue;
 
     fn cells(grid: &Grid, field: &str) -> Vec<Option<Cell>> {
@@ -315,6 +316,20 @@ mod tests {
         assert_eq!(
             cells(&grid, "`unit-price`")[1],
             Some(Cell::Text("integer".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_vector_is_listed_as_one_field_of_type_vector() {
+        let mut description = Description::default();
+        description.add(&document("odd", vec![("embedding", vector(&[0.4, 0.2]))]));
+
+        let grid = description.into_grid();
+
+        assert_eq!(grid.rows().len(), 1);
+        assert_eq!(
+            cells(&grid, "embedding")[1],
+            Some(Cell::Text("vector".to_string()))
         );
     }
 

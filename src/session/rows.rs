@@ -209,7 +209,12 @@ impl Session {
             self.remember_fields(&grid);
             let view = self.view();
             let (page_documents, column_order) = self.last_result.rows_from(first_of_page);
-            let rows_text = view.rows(&grid, page_documents, first_of_page + 1, column_order);
+            let page_text = match (&pages.plan, explains) {
+                (Some(plan), true) if self.settings.format != OutputFormat::Table => {
+                    view.grids(&[("rows", &grid), ("plan", &Grid::plan(plan))])
+                }
+                _ => view.rows(&grid, page_documents, first_of_page + 1, column_order),
+            };
             let hint = self.detail_hint(&view, &grid);
             let elapsed = started.elapsed().saturating_sub(waiting_for_reader);
             if page.more {
@@ -219,7 +224,7 @@ impl Session {
                     notes: vec![FooterNote::MorePages],
                 };
                 self.output
-                    .print(&format!("{rows_text}{}{hint}", view.footer(&footer)))?;
+                    .print(&format!("{page_text}{}{hint}", view.footer(&footer)))?;
                 let asked = Instant::now();
                 let continues = self.output.ask_for_more(&self.theme)?;
                 waiting_for_reader += asked.elapsed();
@@ -238,22 +243,13 @@ impl Session {
                 elapsed,
                 notes: self.timing_notes(pages.first_response, started, pages.plan.as_ref()),
             };
-            let mut text = String::new();
+            let mut text = page_text;
             match (&pages.plan, explains) {
-                (Some(plan), true) if self.settings.format != OutputFormat::Table => {
-                    text.push_str(&view.grids(&[("rows", &grid), ("plan", &Grid::plan(plan))]));
-                }
-                (Some(plan), true) => {
-                    if !grid.is_empty() {
-                        text.push_str(&rows_text);
-                    }
+                (Some(plan), true) if self.settings.format == OutputFormat::Table => {
                     text.push_str(&view.plan(plan));
                 }
-                (None, true) => {
-                    self.output.notice("Firestore returned no plan.")?;
-                    text.push_str(&rows_text);
-                }
-                (_, false) => text.push_str(&rows_text),
+                (None, true) => self.output.notice("Firestore returned no plan.")?,
+                _ => {}
             }
             text.push_str(&view.footer(&footer));
             text.push_str(&hint);

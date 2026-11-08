@@ -19,6 +19,24 @@ pub fn string(text: &str) -> Value {
     value(ValueType::StringValue(text.to_string()))
 }
 
+/// A vector as Firestore stores it: a map of a marker and the components.
+pub fn vector(components: &[f64]) -> Value {
+    value(ValueType::MapValue(MapValue {
+        fields: HashMap::from([
+            ("__type__".to_string(), string("__vector__")),
+            (
+                "value".to_string(),
+                value(ValueType::ArrayValue(ArrayValue {
+                    values: components
+                        .iter()
+                        .map(|component| value(ValueType::DoubleValue(*component)))
+                        .collect(),
+                })),
+            ),
+        ]),
+    }))
+}
+
 pub fn document(id: &str, fields: Vec<(&str, Value)>) -> FirestoreDocument {
     FirestoreDocument {
         name: format!("{DOCUMENTS_PATH}/books/{id}"),
