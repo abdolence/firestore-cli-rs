@@ -207,8 +207,8 @@ impl Session {
 
     async fn index_export(&mut self, output: Option<&Path>) -> FsqResult<()> {
         let listing = self.list_live_indexes(None).await?;
-        for line in IndexesFile::unexported(&listing) {
-            self.output.notice(&format!("not exported: {line}"))?;
+        for item in listing.unrecognised_items() {
+            self.output.notice(&format!("not exported: {item}"))?;
         }
         let file = IndexesFile::from(&listing);
         let text = format!("{}\n", serde_json::to_string_pretty(&file)?);

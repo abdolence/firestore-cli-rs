@@ -321,28 +321,6 @@ impl IndexesFile {
     }
 }
 
-impl IndexesFile {
-    /// What the listing shows that the file cannot declare, one line each: the items the firestore
-    /// crate could not represent, and the overrides and TTL states of fields that it could not.
-    pub fn unexported(listing: &FirestoreIndexListing) -> Vec<String> {
-        let mut lines: Vec<String> = listing
-            .unrecognised
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        for field in &listing.fields {
-            if let Some(FirestoreFieldOverrideOutcome::Unrecognised(reason)) = &field.index_override
-            {
-                lines.push(format!("{}: {reason}", field.name));
-            }
-            if let Some(FirestoreFieldTtlOutcome::Unrecognised(reason)) = &field.ttl {
-                lines.push(format!("{}: {reason}", field.name));
-            }
-        }
-        lines
-    }
-}
-
 impl TryFrom<FileIndex> for FirestoreCompositeIndex {
     type Error = IndexesFileProblem;
 
@@ -1141,35 +1119,5 @@ mod tests {
             ]
         );
         assert_eq!(params[0].ttl_fields, ["expires_at", "placed_at"]);
-    }
-
-    #[test]
-    fn what_the_crate_cannot_represent_is_listed_as_unexported() {
-        let listing = FirestoreIndexListing {
-            indexes: Vec::new(),
-            fields: vec![FirestoreListedField {
-                name: "projects/p/databases/d/collectionGroups/orders/fields/note".to_string(),
-                collection_group: group("orders"),
-                field_path: "note".to_string(),
-                index_override: Some(FirestoreFieldOverrideOutcome::Unrecognised(
-                    "an unknown order".to_string(),
-                )),
-                ttl: None,
-            }],
-            unrecognised: vec![firestore::FirestoreUnrecognisedIndexItem {
-                name: "projects/p/databases/d/collectionGroups/orders/indexes/CICAgJim14AK"
-                    .to_string(),
-                collection_group: Some(group("orders")),
-                reason: "a multikey index".to_string(),
-            }],
-        };
-
-        assert_eq!(
-            IndexesFile::unexported(&listing),
-            [
-                "projects/p/databases/d/collectionGroups/orders/indexes/CICAgJim14AK: a multikey index",
-                "projects/p/databases/d/collectionGroups/orders/fields/note: an unknown order",
-            ]
-        );
     }
 }
