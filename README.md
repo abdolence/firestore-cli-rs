@@ -219,9 +219,10 @@ fsq -p my-project index create books genre:asc rating:desc
 fsq -p my-project index delete books genre:asc rating:desc --if-exists
 ```
 
-* `plan <file> [--prune]` prints one row per index, field override and TTL field: `create`, `update`, `enable`,
-  `delete`, `revert`, `disable`, `unchanged`, `pending`, `reverting`, `needs repair`, `undeclared`, `withheld` and
-  `unrecognised`. It writes nothing;
+* `plan <file> [--prune]` prints one row per index and TTL field, and one per field override that the plan changes
+  or leaves undeclared: `create`, `update`, `enable`, `delete`, `revert`, `disable`, `unchanged`, `pending`,
+  `reverting`, `needs repair`, `undeclared`, `withheld` and `unrecognised`. A field override that already matches the
+  file has no row, and an index or TTL field that matches shows as `unchanged`. It writes nothing;
 * `sync <file> [--prune] [--no-wait]` applies the plan, with a spinner for each collection group while its builds
   run, and prints the same table. `--no-wait` returns once the last change is requested. Ctrl-C stops the wait, not
   the builds, and `fsq index list` shows their state afterwards;
@@ -360,20 +361,28 @@ an Enterprise edition database, and `--offline` works on any edition.
 `\l --recursive` lists the collections under the root and the subcollections below them:
 
 ```
-my-project/my-database (enterprise)> \l --recursive --depth 3
-╭────────────┬───────────────────────────┬───────┬──────────────────────────╮
-│ collection ┆ path                      ┆ depth ┆ seen_under               │
-╞════════════╪═══════════════════════════╪═══════╪══════════════════════════╡
-│ books      ┆ books                     ┆ 1     ┆                          │
-│ users      ┆ users                     ┆ 1     ┆                          │
-│ addresses  ┆ users/*/addresses         ┆ 2     ┆ 2 of 3 sampled users     │
-│ orders     ┆ users/*/orders            ┆ 2     ┆ 1 of 3 sampled users     │
-│ lines      ┆ users/*/addresses/*/lines ┆ 3     ┆ 1 of 2 sampled addresses │
-╰────────────┴───────────────────────────┴───────┴──────────────────────────╯
-5 collections · 3.10 s · sampled 20 docs per collection
+my-project/my-database (enterprise)> \l --recursive
+╭───────────────────────────────────┬───────────────────────────────────────────────┬───────┬─────────────────────────────────────╮
+│ collection                        ┆ path                                          ┆ depth ┆ seen_under                          │
+╞═══════════════════════════════════╪═══════════════════════════════════════════════╪═══════╪═════════════════════════════════════╡
+│ pipeline-books                    ┆ pipeline-books                                ┆ 1     ┆                                     │
+│ pipeline-bulk                     ┆ pipeline-bulk                                 ┆ 1     ┆                                     │
+│ pipeline-cache-edge               ┆ pipeline-cache-edge                           ┆ 1     ┆                                     │
+│ pipeline-cache-sessions           ┆ pipeline-cache-sessions                       ┆ 1     ┆                                     │
+│ pipeline-restaurants              ┆ pipeline-restaurants                          ┆ 1     ┆                                     │
+│ sql-tests-on-conflict-star-fluent ┆ sql-tests-on-conflict-star-fluent             ┆ 1     ┆                                     │
+│ pipeline-cache-children           ┆ pipeline-cache-edge/*/pipeline-cache-children ┆ 2     ┆ 1 of 20 sampled pipeline-cache-edge │
+│ reviews                           ┆ pipeline-restaurants/*/reviews                ┆ 2     ┆ 3 of 9 sampled pipeline-restaurants │
+╰───────────────────────────────────┴───────────────────────────────────────────────┴───────┴─────────────────────────────────────╯
+8 collections · 41.34 s · sampled 20 docs per collection
 ```
 
 Firestore lists the collections under one document at a time, so no call returns every subcollection.
+Each call takes several seconds on an Enterprise edition database, where a Standard edition database answers in a
+fraction of a second. fsq sends the calls of one level together, so the time grows with the depth: the listing above,
+6 root collections at depth 2, took 41 s, and depth 1 alone took 6 s. `--depth 1` is the quick listing of the root
+collections.
+
 `\l --recursive` reads a sample of the documents of each collection and lists the collections under them:
 
 * `--sample K` is the number of documents read per collection path, 20 by default. For `users/*/addresses` that is 20
@@ -434,8 +443,9 @@ A line that is not valid JSON, or not a document in the tagged encoding, fails w
 the firestore crate, such as `JSON_UNKNOWN_WRAPPER`. A document that Firestore refuses fails with its line number and
 the status code. A batch is not atomic: each write of it is counted as written, skipped or failed, so that the other
 writes of a batch with a failure are applied. A request that Firestore refuses as a whole fails every write of it,
-and the failure names the first and the last line of the batch. Without `--keep-going` the import stops at the first
-failure, and with it the import goes on after a line, a write or a request fails. fsq exits with 1 when any document
+and the failure names the first and the last line of the batch. Without `--keep-going` the import stops after the
+request that holds the first failure, and reports every failed write of that request. With it the import goes on
+after a line, a write or a request fails. fsq exits with 1 when any document
 failed. The last line on stderr counts the documents written, skipped and failed.
 
 ## Scripting
@@ -449,7 +459,8 @@ echo 'SHOW COLLECTIONS; \d books' | fsq -p my-project -d my-database
 
 * a script is split on `;` and runs one statement at a time, since the firestore crate takes one statement per call.
   Meta-commands run in scripts too;
-* `-e` and `-f` stop at the first statement that fails and exit with 1;
+* `-e` and `-f` stop at the first statement that fails and exit with 1. The error names the position of that input in
+  the script and its first line;
 * input piped to fsq runs as the REPL runs typed input: a failed statement is reported and the rest still runs, and
   fsq exits with 1 when any failed;
 * `--format json` prints each result as a JSON array of objects, and `--format jsonl` as JSON lines, one object per
