@@ -1159,6 +1159,7 @@ mod tests {
             unrecognised: vec![firestore::FirestoreUnrecognisedIndexItem {
                 name: "projects/p/databases/d/collectionGroups/orders/indexes/CICAgJim14AK"
                     .to_string(),
+                collection_group: Some(group("orders")),
                 reason: "a multikey index".to_string(),
             }],
         };
