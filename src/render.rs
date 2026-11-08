@@ -1,6 +1,7 @@
 //! Everything fsq prints, rendered into strings so that one statement's output is written at
 //! once, through the pager when it is taller than the terminal.
 
+mod fit;
 #[cfg(test)]
 pub mod fixtures;
 mod footer;
