@@ -8,6 +8,16 @@ use thiserror::Error;
 
 pub type FsqResult<T> = Result<T, FsqError>;
 
+/// Whether `error` is Firestore refusing to run a pipeline on this database, as a Standard edition
+/// database does with `FAILED_PRECONDITION`.
+pub fn is_pipeline_refusal(error: &FirestoreError) -> bool {
+    matches!(
+        error,
+        FirestoreError::DatabaseError(refused)
+            if refused.public.code == format!("{:?}", Code::FailedPrecondition)
+    )
+}
+
 #[derive(Debug, Error)]
 pub enum FsqError {
     #[error(transparent)]

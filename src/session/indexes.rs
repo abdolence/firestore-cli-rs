@@ -125,9 +125,6 @@ impl Session {
         for params in declarations {
             let group = params.collection_group.clone();
             let plan = interruptible(self.declared_indexes(params, args.prune).plan()).await??;
-            if let Some(reason) = &plan.skipped {
-                self.output.notice(&format!("{group} skipped: {reason}"))?;
-            }
             changes.add_plan(&group, &plan);
         }
         self.show_changes(&changes, started)
@@ -159,9 +156,6 @@ impl Session {
             }
             match outcome.and_then(|synced| synced.map_err(FsqError::from)) {
                 Ok(report) => {
-                    if let Some(reason) = &report.skipped {
-                        self.output.notice(&format!("{group} skipped: {reason}"))?;
-                    }
                     if let Some(withheld) = &report.withheld_deletes {
                         self.output.notice(&format!(
                             "{group}: {} deletes withheld, because {}",

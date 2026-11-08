@@ -54,9 +54,12 @@ The prompt shows `project/database (edition)`, and `\c <database>` connects to a
 
 ## Editions
 
-SQL needs a database of the Firestore Enterprise edition. On a Standard edition database the REPL says so when it
-connects, and `SELECT` and the writes fail. `\l`, `\d`, `SHOW COLLECTIONS`, `SHOW INDEXES` and the index statements
+SQL needs a database of the Firestore Enterprise edition. On a Standard edition database Firestore refuses `SELECT` and
+the writes, and fsq shows its answer. `\l`, `\d`, `SHOW COLLECTIONS`, `SHOW INDEXES` and the index statements
 work on both editions.
+
+When it connects, fsq sends Firestore a pipeline that reads nothing and costs no read units. When Firestore refuses it,
+the REPL says that SQL may need an Enterprise edition database. Any other failure of the pipeline shows nothing.
 
 ## The REPL
 
@@ -221,8 +224,8 @@ the firestore crate cannot represent, such as an index with `multikey`, and leav
 
 `EXPLAIN SELECT ..` shows the plan Firestore chose, without reading any document, and `EXPLAIN ANALYZE SELECT ..`
 also returns the rows and what the run read. The plan is drawn as a tree, followed by a warning for a *table scan*:
-a read of every document of the collection, instead of an index. The Firestore emulator returns no plan, and fsq says
-so.
+a read of every document of the collection, instead of an index. When Firestore returns no plan, as the emulator
+does, fsq says so.
 
 `\timing on` runs every `SELECT` with `ANALYZE` and adds to the footer the round trip time, the documents read and
 the read units. A *read unit* is how the Enterprise edition bills reads: 4 KiB of the data a read processes.
@@ -239,8 +242,8 @@ fsq -p my-project -d my-database describe books --sample 100
 
 `\d books` in the REPL lists the same: each field path of a sample of documents, nested maps included, with the
 types it holds, the share of the sampled documents that have it and an example value. The sample is 500 documents
-unless `--sample` sets another size. On an Enterprise edition database it is a random sample. On a Standard edition
-database, on the emulator and when the edition cannot be read, it is the first documents by ID.
+unless `--sample` sets another size. fsq asks Firestore for a random sample first. When Firestore refuses it, as a
+Standard edition database does, the sample is the first documents by ID.
 
 ```
 my-project/my-database (enterprise)> \d books

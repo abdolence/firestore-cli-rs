@@ -193,9 +193,7 @@ impl Session {
                     text.push_str(&view.plan(plan));
                 }
                 (None, true) => {
-                    self.output.notice(
-                        "Firestore returned no plan; the Firestore emulator returns none.",
-                    )?;
+                    self.output.notice("Firestore returned no plan.")?;
                     text.push_str(&view.grid(&grid));
                 }
                 (_, false) => text.push_str(&view.grid(&grid)),

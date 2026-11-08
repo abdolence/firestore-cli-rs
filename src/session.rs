@@ -4,7 +4,7 @@ mod statement;
 
 use crate::codegen::CodegenOptions;
 use crate::collection_tree::{CollectionTree, CollectionTreeTarget};
-use crate::connection::{Connection, EditionStatus};
+use crate::connection::{Connection, EditionStatus, PipelineProbe};
 use crate::describe::{DescribeTarget, Description};
 use crate::errors::{FsqError, FsqResult};
 use crate::meta::{meta_help, MetaCommand, Switch};
@@ -13,7 +13,7 @@ use crate::render::{
     NAME_COLUMN,
 };
 use crate::script::{Input, Script};
-use firestore::{FirestoreCollectionId, FirestoreDatabaseEdition, FirestoreSqlOutcome};
+use firestore::{FirestoreCollectionId, FirestoreSqlOutcome};
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -213,23 +213,20 @@ impl Session {
     pub fn greet(&self) -> FsqResult<()> {
         self.output
             .notice(&format!("Connected to {}.", self.connection.label()))?;
+        if self.connection.pipelines == PipelineProbe::Refused {
+            self.output.notice(
+                &self
+                    .theme
+                    .warning
+                    .apply_to("SQL may need an Enterprise edition database.")
+                    .to_string(),
+            )?;
+        }
         match &self.connection.edition {
-            EditionStatus::Known(FirestoreDatabaseEdition::Standard) => self.output.notice(
-                &self.theme.warning.apply_to(
-                    "SQL needs an Enterprise edition database, and on this Standard edition database SELECT and the writes fail. \\l, \\d, SHOW COLLECTIONS, SHOW INDEXES and the index statements work on both editions.",
-                ).to_string(),
-            ),
-            EditionStatus::Unreadable(error) => self
-                .output
-                .notice(&format!("The edition of the database could not be read: {error}")),
-            EditionStatus::Known(FirestoreDatabaseEdition::Enterprise) | EditionStatus::Emulator => {
-                Ok(())
-            }
-            EditionStatus::Known(_) => self.output.notice(
-                &self.theme.warning.apply_to(
-                    "SQL needs an Enterprise edition database, and the edition of this database is unknown to this version of fsq, so SELECT and the writes may fail. \\l, \\d, SHOW COLLECTIONS, SHOW INDEXES and the index statements may not work either.",
-                ).to_string(),
-            ),
+            EditionStatus::Unreadable(error) => self.output.notice(&format!(
+                "The edition of the database could not be read: {error}"
+            )),
+            EditionStatus::Known(_) => Ok(()),
         }
     }
 

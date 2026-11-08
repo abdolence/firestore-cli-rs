@@ -1,15 +1,17 @@
-use crate::connection::{Connection, EditionStatus};
-use crate::errors::{FsqError, FsqResult, InvalidCollectionPath, InvalidSampleSize};
+use crate::connection::Connection;
+use crate::errors::{
+    is_pipeline_refusal, FsqError, FsqResult, InvalidCollectionPath, InvalidSampleSize,
+};
 use crate::render::{Cell, Grid};
 use crate::walk::Walk;
 use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
 use firestore::{
-    FirestoreCollectionId, FirestoreCollectionSource, FirestoreDatabaseEdition, FirestoreDocument,
-    FirestorePipeline, FirestorePipelineSource, FirestorePipelineStage, FirestoreSampleSize,
+    FirestoreCollectionId, FirestoreCollectionSource, FirestoreDocument, FirestorePipeline,
+    FirestorePipelineSource, FirestorePipelineStage, FirestoreResult, FirestoreSampleSize,
     FirestoreSampleStage, FirestoreSqlFieldName,
 };
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroU32;
@@ -158,40 +160,53 @@ struct FieldPathSummary {
 }
 
 impl Description {
-    /// Reads a sample of the collection: a random one through a pipeline on an Enterprise
-    /// edition database, and the first documents by ID through a listing elsewhere, since
-    /// Standard runs no pipelines.
+    /// Reads a sample of the collection: a random one through a pipeline, and when Firestore
+    /// refuses the pipeline, the first documents by ID through a listing.
     pub async fn sample(connection: &Connection, target: &DescribeTarget) -> FsqResult<Self> {
         let db = &connection.db;
         let collection = &target.collection;
         let size = target.sample.documents();
-        let mut documents = match connection.edition {
-            EditionStatus::Known(FirestoreDatabaseEdition::Enterprise) => {
-                let pipeline = FirestorePipeline::new(FirestorePipelineSource::Collection(
-                    FirestoreCollectionSource::new(collection.collection_id().to_string())
-                        .opt_parent(collection.parent_name(db.get_documents_path())),
-                ))
-                .with_stage(FirestorePipelineStage::Sample(
-                    FirestoreSampleStage::new(FirestoreSampleSize::Documents(size)),
-                ));
-                db.fluent()
-                    .pipeline()
-                    .select()
-                    .from_pipeline(pipeline)
-                    .stream_query_with_errors()
+        let sampled = Self::sample_through_pipeline(connection, target).await;
+        let documents = match sampled {
+            Ok(documents) => documents,
+            Err(error) if is_pipeline_refusal(&error) => {
+                Walk::new(db)
+                    .documents(collection, false, Some(size as usize))
+                    .await?
+                    .take(size as usize)
+                    .try_collect::<Vec<_>>()
                     .await?
             }
-            _ => Walk::new(db)
-                .documents(collection, false, Some(size as usize))
-                .await?
-                .take(size as usize)
-                .boxed(),
+            Err(error) => return Err(error.into()),
         };
         let mut description = Self::default();
-        while let Some(document) = documents.next().await {
-            description.add(&document?);
+        for document in &documents {
+            description.add(document);
         }
         Ok(description)
+    }
+
+    async fn sample_through_pipeline(
+        connection: &Connection,
+        target: &DescribeTarget,
+    ) -> FirestoreResult<Vec<FirestoreDocument>> {
+        let db = &connection.db;
+        let collection = &target.collection;
+        let pipeline = FirestorePipeline::new(FirestorePipelineSource::Collection(
+            FirestoreCollectionSource::new(collection.collection_id().to_string())
+                .opt_parent(collection.parent_name(db.get_documents_path())),
+        ))
+        .with_stage(FirestorePipelineStage::Sample(FirestoreSampleStage::new(
+            FirestoreSampleSize::Documents(target.sample.documents()),
+        )));
+        db.fluent()
+            .pipeline()
+            .select()
+            .from_pipeline(pipeline)
+            .stream_query_with_errors()
+            .await?
+            .try_collect()
+            .await
     }
 
     pub fn documents(&self) -> usize {
