@@ -1,4 +1,4 @@
-use super::{counted, View};
+use super::{counted, cut_middle, View};
 use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
 use firestore::gcloud_sdk::prost_types::Timestamp;
@@ -167,10 +167,5 @@ fn single_line_char(c: char) -> char {
 }
 
 fn cut(text: &str) -> String {
-    if text.chars().count() <= CELL_TEXT_LIMIT {
-        text.to_string()
-    } else {
-        let kept: String = text.chars().take(CELL_TEXT_LIMIT - 1).collect();
-        format!("{kept}…")
-    }
+    cut_middle(text, CELL_TEXT_LIMIT)
 }

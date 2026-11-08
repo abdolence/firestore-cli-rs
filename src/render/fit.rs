@@ -1,3 +1,4 @@
+use super::cut_middle;
 use comfy_table::{presets, Cell as TableCell, ContentArrangement, Table};
 
 /// What the table preset adds around every column: a space on each side and a separator.
@@ -23,7 +24,7 @@ impl TableText {
         self.column_widths().iter().sum::<usize>() + self.frame_width()
     }
 
-    /// Cuts the longest cells with `…` until the table is `width` wide. Columns shrink down to
+    /// Cuts the longest cells in the middle with `…` until the table is `width` wide. Columns shrink down to
     /// their headers first, and below them only when the headers themselves cannot fit, so a
     /// table with more columns than the terminal has room for still overflows by the frame.
     pub fn fit_to(&mut self, width: usize) {
@@ -98,7 +99,30 @@ fn shrink(mut widths: Vec<usize>, floors: &[usize], available: usize) -> Vec<usi
 
 fn cut(cell: &str, width: usize) -> String {
     cell.lines()
-        .map(|line| console::truncate_str(line, width, "…"))
+        .map(|line| cut_middle(line, width))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cell_cut_to_fit_keeps_its_start_and_its_end() {
+        let mut cells = TableText::new(
+            vec!["name".to_string()],
+            vec![vec!["pipeline-restaurants/rest-08".to_string()]],
+        );
+
+        cells.fit_to(22);
+
+        assert!(
+            cells
+                .into_table()
+                .to_string()
+                .contains("│ pipeline-…/rest-08 │"),
+            "cut cell not found"
+        );
+    }
 }
