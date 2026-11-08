@@ -126,7 +126,8 @@ impl FromStr for MetaCommand {
         let (command, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
         let arguments: Vec<&str> = rest.split_whitespace().collect();
         let command = match command {
-            "\\q" | "\\quit" => no_arguments("\\q", &arguments, Self::Quit)?,
+            "\\q" => no_arguments("\\q", &arguments, Self::Quit)?,
+            "\\quit" => no_arguments("\\quit", &arguments, Self::Quit)?,
             "\\?" => no_arguments("\\?", &arguments, Self::Help)?,
             "\\l" => {
                 let ListCollections { recursive, target } = parse_arguments("\\l", rest)?;
@@ -387,6 +388,18 @@ mod tests {
             "\\frobnicate".parse::<MetaCommand>(),
             Err(FsqError::UnknownMetaCommand(UnknownMetaCommand { command })) if command == "\\frobnicate"
         ));
+    }
+
+    #[test]
+    fn quit_names_itself_in_its_error() {
+        for command in ["\\q", "\\quit"] {
+            match format!("{command} now").parse::<MetaCommand>() {
+                Err(FsqError::InvalidMetaArgument(InvalidMetaArgument {
+                    command: named, ..
+                })) => assert_eq!(named, command),
+                other => panic!("{other:?}"),
+            }
+        }
     }
 
     #[test]
