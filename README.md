@@ -27,13 +27,70 @@ crate, which translates SQL into Firestore pipelines.
 
 ## Installation
 
-fsq builds against the firestore crate in a checkout of firestore-rs next to this repository:
+### Install script
+
+On macOS, Linux and FreeBSD:
 
 ```sh
-git clone https://github.com/abdolence/firestore-rs.git
-git clone https://github.com/abdolence/firestore-cli-rs.git
-cargo install --path firestore-cli-rs
+curl -fsSL https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.sh | sh
 ```
+
+On Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.ps1 | iex
+```
+
+The scripts pick the archive for your operating system and architecture from the latest release
+and verify it against the SHA-256 digest GitHub records for it; nothing is installed if the digest
+is missing or does not match, or if the downloaded binary does not run on your system. Running a
+script again upgrades fsq in place. The Linux x86_64 and aarch64 archives are built for glibc;
+on musl systems such as Alpine use [Cargo](#cargo).
+
+* `FSQ_INSTALL_DIR`: the install directory. Default is `~/.local/bin` on macOS, Linux and FreeBSD
+  and `%LOCALAPPDATA%\Programs\fsq` on Windows;
+* `FSQ_VERSION`: the release tag to install, such as `v0.1.0`. Default is the latest release.
+
+The Windows script adds the install directory to your user `PATH`; the shell script prints the
+`export` line to add if the directory is not on your `PATH`.
+
+To install a specific version on macOS, Linux and FreeBSD:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.sh | env FSQ_VERSION=v0.1.0 sh
+```
+
+On Windows:
+
+```powershell
+& { try { $env:FSQ_VERSION = 'v0.1.0'; irm https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.ps1 | iex } finally { Remove-Item Env:FSQ_VERSION } }
+```
+
+To install into a custom directory on macOS, Linux and FreeBSD:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.sh | env FSQ_INSTALL_DIR=$HOME/bin sh
+```
+
+On Windows:
+
+```powershell
+& { try { $env:FSQ_INSTALL_DIR = 'C:\Tools\fsq'; irm https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.ps1 | iex } finally { Remove-Item Env:FSQ_INSTALL_DIR } }
+```
+
+### Binary releases
+
+Download the latest release from [the GitHub releases](https://github.com/abdolence/firestore-cli-rs/releases).
+
+The Linux x86_64 and aarch64 archives need glibc; the Linux arm archive is static (musl) and needs no glibc.
+
+### Cargo
+
+```sh
+cargo install firestore-cli
+```
+
+The crate is `firestore-cli` and the binary it installs is `fsq`.
 
 ## Connecting
 
