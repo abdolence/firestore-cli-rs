@@ -1,0 +1,151 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "test-release"
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+  RUST_BACKTRACE: 1
+  CARGO_PROFILE_RELEASE_STRIP: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_protected && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: ${{ matrix.platform.os_name }} with rust ${{ matrix.toolchain }}
+    runs-on: ${{ matrix.platform.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - os_name: FreeBSD-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-freebsd
+            bin: fsq
+            name: fsq-FreeBSD-x86_64.tar.gz
+            skip_tests: true
+          - os_name: Linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: fsq
+            name: fsq-Linux-x86_64.tar.gz
+            # Built natively, the binary links against the runner's newer glibc and fails on
+            # older distributions; cross builds in an image with an older one.
+            force_cross: true
+          - os_name: Linux-aarch64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            bin: fsq
+            name: fsq-Linux-aarch64.tar.gz
+            qemu_platforms: arm64
+          - os_name: Linux-arm
+            os: ubuntu-latest
+            target: arm-unknown-linux-musleabi
+            bin: fsq
+            name: fsq-Linux-arm-musl.tar.gz
+            qemu_platforms: arm
+          - os_name: Windows-aarch64
+            os: windows-latest
+            target: aarch64-pc-windows-msvc
+            bin: fsq.exe
+            name: fsq-Windows-aarch64.zip
+            skip_tests: true
+          - os_name: Windows-i686
+            os: windows-latest
+            target: i686-pc-windows-msvc
+            bin: fsq.exe
+            name: fsq-Windows-i686.zip
+            skip_tests: true
+          - os_name: Windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: fsq.exe
+            name: fsq-Windows-x86_64.zip
+          - os_name: macOS-x86_64
+            os: macOS-latest
+            target: x86_64-apple-darwin
+            bin: fsq
+            name: fsq-Darwin-x86_64.tar.gz
+          - os_name: macOS-aarch64
+            os: macOS-latest
+            target: aarch64-apple-darwin
+            bin: fsq
+            name: fsq-Darwin-aarch64.tar.gz
+            skip_tests: true
+        toolchain:
+          - stable
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install musl-tools on Linux
+        run: sudo apt-get update --yes && sudo apt-get install --yes musl-tools openssl
+        if: contains(matrix.platform.name, 'musl')
+      - name: Build binary
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          command: "build"
+          target: ${{ matrix.platform.target }}
+          toolchain: ${{ matrix.toolchain }}
+          force-use-cross: ${{ matrix.platform.force_cross || false }}
+          # The glibc baseline is that of cross's images, which a newer cross release may raise.
+          cross-version: v0.2.5
+          args: "--locked --release"
+      # cross runs the test binary under qemu, but the integration tests start the built binary
+      # themselves, and a process started from there is only run if the host kernel knows how.
+      - name: Register qemu binary formats
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: ${{ matrix.platform.qemu_platforms }}
+        if: ${{ matrix.platform.qemu_platforms && !matrix.platform.skip_tests }}
+      - name: Run tests
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          command: "test"
+          # The action restores its cargo cache on every invocation, and the cached target
+          # directory does not carry the workspace binary, so a second restore here wiped the
+          # binary built by the previous step before it could be packaged.
+          use-rust-cache: false
+          target: ${{ matrix.platform.target }}
+          toolchain: ${{ matrix.toolchain }}
+          force-use-cross: ${{ matrix.platform.force_cross || false }}
+          cross-version: v0.2.5
+          args: "--locked --release"
+        if: ${{ !matrix.platform.skip_tests }}
+      - name: Package as archive
+        shell: bash
+        run: |
+          cd target/${{ matrix.platform.target }}/release
+          if [[ "${{ matrix.platform.os }}" == "windows-latest" ]]; then
+            7z a ../../../${{ matrix.platform.name }} ${{ matrix.platform.bin }}
+          else
+            tar czvf ../../../${{ matrix.platform.name }} ${{ matrix.platform.bin }}
+          fi
+          cd -
+        if: |
+          matrix.toolchain == 'stable' &&
+          ( startsWith( github.ref, 'refs/tags/v' ) ||
+            github.ref == 'refs/tags/test-release' )
+      - name: Publish release artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: fsq-${{ matrix.platform.os_name }}
+          path: "fsq-*"
+        if: matrix.toolchain == 'stable' && ( startsWith( github.ref, 'refs/tags/v' ) || github.ref == 'refs/tags/test-release' )
+      - name: Generate SHA-256
+        run: shasum -a 256 ${{ matrix.platform.name }}
+        if: |
+          matrix.toolchain == 'stable' &&
+          matrix.platform.os == 'macOS-latest' &&
+          ( startsWith( github.ref, 'refs/tags/v' ) ||
+            github.ref == 'refs/tags/test-release' )
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          draft: true
+          files: "fsq-*"
+        if: matrix.toolchain == 'stable' && startsWith( github.ref, 'refs/tags/v' )
