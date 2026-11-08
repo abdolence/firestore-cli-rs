@@ -1,6 +1,6 @@
 [package]
 name = "firestore-cli"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Abdulla Abdurakhmanov <me@abdolence.dev>"]
 edition = "2021"
 rust-version = "1.91"
@@ -18,7 +18,7 @@ name = "fsq"
 path = "src/main.rs"
 
 [dependencies]
-firestore = { version = "0.65.3", features = ["sql", "admin", "json-conversion", "codegen"] }
+firestore = { version = "0.65.3", default-features = false, features = ["tls-webpki-roots", "auth-default-crypto", "sql", "admin", "json-conversion", "codegen"] }
 clap = { version = "4.6", features = ["derive"] }
 # custom_styling measures cells by their visible width, so that coloured values line up.
 comfy-table = { version = "8", features = ["custom_styling"] }
