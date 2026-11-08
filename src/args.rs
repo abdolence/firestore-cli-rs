@@ -19,7 +19,7 @@ pub struct CliArgs {
         short = 'p',
         long,
         global = true,
-        help = "Google Cloud project. Default: GOOGLE_CLOUD_PROJECT, then the project the credentials name"
+        help = "Google Cloud project. Default: the first of GCP_PROJECT, PROJECT_ID, GCP_PROJECT_ID and GOOGLE_CLOUD_PROJECT that is set, then the project of the credentials file, then of the metadata server"
     )]
     pub project: Option<ProjectId>,
 
