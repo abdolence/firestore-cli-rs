@@ -251,10 +251,11 @@ fsq -p my-project index create books genre:asc rating:desc
 fsq -p my-project index delete books genre:asc rating:desc --if-exists
 ```
 
-* `plan <file> [--prune]` prints one row per index and TTL field, and one per field override that the plan changes
-  or leaves undeclared: `create`, `update`, `enable`, `delete`, `revert`, `disable`, `unchanged`, `pending`,
-  `reverting`, `needs repair`, `undeclared`, `withheld` and `unrecognised`. A field override that already matches the
-  file has no row, and an index or TTL field that matches shows as `unchanged`. It writes nothing;
+* `plan <file> [--prune]` prints one row per index, field override and TTL field that the file declares or that is
+  live: `create`, `update`, `enable`, `delete`, `revert`, `disable`, `unchanged`, `pending`, `reverting`,
+  `needs repair`, `undeclared`, `withheld` and `unrecognised`. An index, field override or TTL field that already
+  matches the file shows as `unchanged`, and a field override that Firestore is still reverting shows as `reverting`.
+  It writes nothing;
 * `sync <file> [--prune] [--no-wait]` applies the plan, with a spinner for each collection group while its builds
   run, and prints the same table. `--no-wait` returns once the last change is requested. Ctrl-C stops the wait, not
   the builds, and `fsq index list` shows their state afterwards;

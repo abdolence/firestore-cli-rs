@@ -94,6 +94,12 @@ impl IndexChanges {
             FIELD_OVERRIDE_KIND,
             &plan.reverting_fields,
         );
+        self.displayed(
+            group,
+            Unchanged,
+            FIELD_OVERRIDE_KIND,
+            &plan.unchanged_fields,
+        );
         self.displayed(group, Unchanged, INDEX_KIND, &plan.unchanged);
         self.displayed(group, Pending, INDEX_KIND, &plan.pending);
         self.displayed(group, NeedsRepair, INDEX_KIND, &plan.needs_repair);
@@ -122,6 +128,18 @@ impl IndexChanges {
             self.listed_indexes(group, Withheld, &withheld.indexes);
         }
         self.listed_fields(group, Revert, FIELD_OVERRIDE_KIND, &report.reverted_fields);
+        self.listed_fields(
+            group,
+            Reverting,
+            FIELD_OVERRIDE_KIND,
+            &report.reverting_fields,
+        );
+        self.displayed(
+            group,
+            Unchanged,
+            FIELD_OVERRIDE_KIND,
+            &report.unchanged_fields,
+        );
         self.displayed(group, Unchanged, INDEX_KIND, &report.unchanged);
         self.displayed(group, Pending, INDEX_KIND, &report.pending);
         self.displayed(group, NeedsRepair, INDEX_KIND, &report.needs_repair);
@@ -219,10 +237,11 @@ mod tests {
     use super::*;
     use crate::render::{ExpandedMode, OutputFormat, Theme, View};
     use firestore::{
-        FirestoreCompositeIndex, FirestoreFieldOverride, FirestoreFieldOverrideTarget,
-        FirestoreIndexDeletesWithheld, FirestoreIndexDeletesWithheldReason, FirestoreIndexField,
-        FirestoreIndexFieldMode, FirestoreIndexQueryScope, FirestoreIndexState,
-        FirestoreListedCompositeIndex, FirestoreQueryDirection,
+        FirestoreCompositeIndex, FirestoreExplicitFieldOverride, FirestoreFieldOverride,
+        FirestoreFieldOverrideOutcome, FirestoreFieldOverrideTarget, FirestoreIndexDeletesWithheld,
+        FirestoreIndexDeletesWithheldReason, FirestoreIndexField, FirestoreIndexFieldMode,
+        FirestoreIndexQueryScope, FirestoreIndexState, FirestoreListedCompositeIndex,
+        FirestoreQueryDirection,
     };
 
     fn group(id: &str) -> FirestoreCollectionId {
@@ -239,6 +258,28 @@ mod tests {
             search_options: None,
             unique: false,
             density: None,
+        }
+    }
+
+    fn exempted(path: &str) -> FirestoreFieldOverride {
+        FirestoreFieldOverride {
+            target: FirestoreFieldOverrideTarget::Field(path.to_string()),
+            indexes: Vec::new(),
+        }
+    }
+
+    fn reverting_field(path: &str) -> FirestoreListedField {
+        FirestoreListedField {
+            name: format!("projects/p/databases/d/collectionGroups/books/fields/{path}"),
+            collection_group: group("books"),
+            field_path: path.to_string(),
+            index_override: Some(FirestoreFieldOverrideOutcome::Explicit(
+                FirestoreExplicitFieldOverride {
+                    indexes: Vec::new(),
+                    reverting: true,
+                },
+            )),
+            ttl: None,
         }
     }
 
@@ -266,10 +307,8 @@ mod tests {
             create_indexes: vec![ascending_index("genre")],
             unchanged: vec![ascending_index("title")],
             delete_indexes: vec![live],
-            update_fields: vec![FirestoreFieldOverride {
-                target: FirestoreFieldOverrideTarget::Field("notes".to_string()),
-                indexes: Vec::new(),
-            }],
+            update_fields: vec![exempted("notes")],
+            unchanged_fields: vec![exempted("flags")],
             enable_ttl: vec!["expires_at".to_string()],
             ..FirestoreIndexPlan::default()
         };
@@ -287,6 +326,7 @@ mod tests {
 │ books            ┆ update    ┆ field override ┆ notes EXEMPT              ┆              │
 │ books            ┆ enable    ┆ ttl            ┆ expires_at                ┆              │
 │ books            ┆ delete    ┆ index          ┆ [COLLECTION] (rating ASC) ┆ CICAgJim14AK │
+│ books            ┆ unchanged ┆ field override ┆ flags EXEMPT              ┆              │
 │ books            ┆ unchanged ┆ index          ┆ [COLLECTION] (title ASC)  ┆              │
 ╰──────────────────┴───────────┴────────────────┴───────────────────────────┴──────────────╯
 "#
@@ -325,6 +365,30 @@ mod tests {
                 Some(Cell::Text("delete".to_string())),
                 Some(Cell::Text("withheld".to_string()))
             ]
+        );
+    }
+
+    #[test]
+    fn a_sync_report_lists_field_overrides_that_match_and_that_are_still_reverting() {
+        let report = FirestoreIndexSyncReport {
+            unchanged_fields: vec![exempted("flags")],
+            reverting_fields: vec![reverting_field("notes")],
+            ..FirestoreIndexSyncReport::default()
+        };
+        let mut changes = IndexChanges::default();
+
+        changes.add_report(&group("books"), &report);
+
+        assert_eq!(changes.written(), 0);
+        assert_eq!(
+            table(&changes),
+            r#"╭──────────────────┬───────────┬────────────────┬──────────────┬────╮
+│ collection_group ┆ action    ┆ kind           ┆ definition   ┆ id │
+╞══════════════════╪═══════════╪════════════════╪══════════════╪════╡
+│ books            ┆ reverting ┆ field override ┆ notes        ┆    │
+│ books            ┆ unchanged ┆ field override ┆ flags EXEMPT ┆    │
+╰──────────────────┴───────────┴────────────────┴──────────────┴────╯
+"#
         );
     }
 }
