@@ -85,6 +85,9 @@ impl SampleSize {
     /// The sample `\l --recursive` takes of each collection, which only has to show which
     /// subcollections exist.
     pub const COLLECTION_TREE_DEFAULT: Self = Self(NonZeroU32::new(20).unwrap());
+
+    /// The sample `\gen` and `fsq codegen` run a SELECT for to type its row struct.
+    pub const CODEGEN_DEFAULT: Self = Self(NonZeroU32::new(100).unwrap());
 }
 
 impl Default for SampleSize {

@@ -1,9 +1,10 @@
 use crate::codegen::GenerateCommand;
 use crate::collection_tree::CollectionTreeTarget;
 use crate::connection::DatabaseId;
-use crate::describe::{CollectionPath, DescribeTarget, SampleSize};
-use crate::errors::{FsqError, FsqResult, UnknownMetaCommand};
+use crate::describe::DescribeTarget;
+use crate::errors::{FsqError, FsqResult, UnclosedQuote, UnknownMetaCommand};
 use crate::render::ExpandedMode;
+use clap::{Args, Command, FromArgMatches};
 use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -87,7 +88,7 @@ pub const META_COMMANDS: &[MetaCommandHelp] = &[
         summary: "wait for CREATE INDEX and ALTER COLLECTION to finish",
     },
     MetaCommandHelp {
-        usage: "\\gen [SELECT] [--param name=value] [--sample N] [--offline]",
+        usage: "\\gen ['SELECT'] [--param NAME=VALUE] [--sample N] [--offline]",
         summary: "fluent Rust code of a SELECT, or of the last one run",
     },
     MetaCommandHelp {
@@ -100,7 +101,10 @@ pub const META_COMMANDS: &[MetaCommandHelp] = &[
     },
 ];
 
-/// The text of `\?`: a line per meta-command, with the summaries in one column.
+const QUOTING_NOTE: &str = "The arguments of \\l, \\d and \\gen are split as a shell splits them: quote the SELECT, and a value that holds spaces or quotes, as in\n  \\gen 'SELECT title FROM books WHERE genre = @genre' --param 'genre=\"science fiction\"'\n";
+
+/// The text of `\?`: a line per meta-command, with the summaries in one column, and a note on
+/// quoting.
 pub fn meta_help() -> String {
     let width = META_COMMANDS
         .iter()
@@ -110,6 +114,7 @@ pub fn meta_help() -> String {
     META_COMMANDS
         .iter()
         .map(|command| format!("{:<width$}  {}\n", command.usage, command.summary))
+        .chain([format!("\n{QUOTING_NOTE}")])
         .collect()
 }
 
@@ -117,14 +122,17 @@ impl FromStr for MetaCommand {
     type Err = FsqError;
 
     fn from_str(line: &str) -> FsqResult<Self> {
-        let mut words = line.split_whitespace();
-        let command = words.next().unwrap_or_default();
-        let arguments: Vec<&str> = words.collect();
+        let line = line.trim_start();
+        let (command, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+        let arguments: Vec<&str> = rest.split_whitespace().collect();
         let command = match command {
             "\\q" | "\\quit" => no_arguments("\\q", &arguments, Self::Quit)?,
             "\\?" => no_arguments("\\?", &arguments, Self::Help)?,
-            "\\l" => Self::ListCollections(CollectionTreeTarget::from_arguments(&arguments)?),
-            "\\d" => Self::Describe(DescribeTarget::try_from(arguments.as_slice())?),
+            "\\l" => {
+                let ListCollections { recursive, target } = parse_arguments("\\l", rest)?;
+                Self::ListCollections(recursive.then_some(target))
+            }
+            "\\d" => Self::Describe(parse_arguments("\\d", rest)?),
             "\\x" => Self::Expanded(optional_argument(
                 "\\x",
                 &arguments,
@@ -154,7 +162,7 @@ impl FromStr for MetaCommand {
                 "on or off",
                 Switch::from_argument,
             )?),
-            "\\gen" => Self::Generate(line.trim_start().trim_start_matches("\\gen").parse()?),
+            "\\gen" => Self::Generate(parse_arguments("\\gen", rest)?),
             other => {
                 return Err(FsqError::UnknownMetaCommand(UnknownMetaCommand {
                     command: other.to_string(),
@@ -163,6 +171,37 @@ impl FromStr for MetaCommand {
         };
         Ok(command)
     }
+}
+
+/// The arguments of `\l`: the options of a recursive listing only make sense with `--recursive`.
+#[derive(Args)]
+struct ListCollections {
+    #[arg(long)]
+    recursive: bool,
+
+    #[command(flatten)]
+    target: CollectionTreeTarget,
+}
+
+/// Reads the arguments of a meta-command as clap reads those of a command, after the quoting of
+/// a shell has split them into words.
+fn parse_arguments<A: Args + FromArgMatches>(
+    command: &'static str,
+    arguments: &str,
+) -> FsqResult<A> {
+    let words = shlex::split(arguments).ok_or_else(|| {
+        FsqError::UnclosedQuote(UnclosedQuote {
+            command,
+            arguments: arguments.to_string(),
+        })
+    })?;
+    let matches = A::augment_args(
+        Command::new(command)
+            .no_binary_name(true)
+            .disable_help_flag(true),
+    )
+    .try_get_matches_from(words)?;
+    Ok(A::from_arg_matches(&matches)?)
 }
 
 impl Switch {
@@ -206,70 +245,11 @@ fn optional_argument<T>(
     }
 }
 
-impl CollectionTreeTarget {
-    /// The arguments of `\l`: none, or `--recursive` with an optional `--depth N` and
-    /// `--sample K`.
-    fn from_arguments(arguments: &[&str]) -> FsqResult<Option<Self>> {
-        const EXPECTED: &str = "--recursive with an optional --depth N and --sample K";
-        let mut target = Self::default();
-        let mut recursive = false;
-        let mut first_option = None;
-        let mut arguments = arguments.iter().copied();
-        while let Some(argument) = arguments.next() {
-            match argument {
-                "--recursive" => recursive = true,
-                "--depth" | "--sample" => {
-                    let value = arguments.next().ok_or_else(|| {
-                        FsqError::missing_meta_argument("\\l", "a number after --depth or --sample")
-                    })?;
-                    if argument == "--depth" {
-                        target.depth = value.parse()?;
-                    } else {
-                        target.sample = value.parse()?;
-                    }
-                    first_option.get_or_insert(argument);
-                }
-                other => return Err(FsqError::invalid_meta_argument("\\l", other, EXPECTED)),
-            }
-        }
-        match (recursive, first_option) {
-            (true, _) => Ok(Some(target)),
-            (false, None) => Ok(None),
-            (false, Some(option)) => Err(FsqError::invalid_meta_argument("\\l", option, EXPECTED)),
-        }
-    }
-}
-
-impl TryFrom<&[&str]> for DescribeTarget {
-    type Error = FsqError;
-
-    /// The arguments of `\d`: a collection and an optional `--sample N`.
-    fn try_from(arguments: &[&str]) -> FsqResult<Self> {
-        let (collection, sample) = match arguments {
-            [collection] => (collection, None),
-            [collection, "--sample", size] => (collection, Some(size)),
-            [] => return Err(FsqError::missing_meta_argument("\\d", "a collection")),
-            [_, argument, ..] => {
-                return Err(FsqError::invalid_meta_argument(
-                    "\\d",
-                    argument,
-                    "a collection and an optional --sample N",
-                ))
-            }
-        };
-        Ok(Self {
-            collection: collection.parse::<CollectionPath>()?,
-            sample: sample
-                .map(|size| size.parse::<SampleSize>())
-                .transpose()?
-                .unwrap_or_default(),
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codegen::ParameterBinding;
+    use crate::describe::SampleSize;
     use crate::errors::{InvalidMetaArgument, MissingMetaArgument};
 
     fn parsed(line: &str) -> MetaCommand {
@@ -307,12 +287,70 @@ mod tests {
         );
     }
 
+    fn generated(line: &str) -> GenerateCommand {
+        match parsed(line) {
+            MetaCommand::Generate(command) => command,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn binding(argument: &str) -> ParameterBinding {
+        argument.parse().expect(argument)
+    }
+
+    #[test]
+    fn an_option_inside_a_string_of_the_select_belongs_to_the_select() {
+        let command =
+            generated(r#"\gen "SELECT title FROM books WHERE note = 'see --param x'" --param a=1"#);
+
+        assert_eq!(
+            command.sql.as_deref(),
+            Some("SELECT title FROM books WHERE note = 'see --param x'")
+        );
+        assert_eq!(command.options.parameters, vec![binding("a=1")]);
+    }
+
+    #[test]
+    fn an_option_inside_a_comment_of_the_select_belongs_to_the_select() {
+        let command = generated("\\gen 'SELECT title FROM books -- --sample 5'");
+
+        assert_eq!(
+            command.sql.as_deref(),
+            Some("SELECT title FROM books -- --sample 5")
+        );
+        assert!(command.options.parameters.is_empty());
+        assert_eq!(
+            command.options.sample_rows(),
+            Some(SampleSize::CODEGEN_DEFAULT)
+        );
+    }
+
+    #[test]
+    fn gen_without_a_select_leaves_it_to_the_last_one_that_ran() {
+        assert_eq!(generated("\\gen").sql, None);
+        assert_eq!(generated("\\gen --offline").options.sample_rows(), None);
+    }
+
+    #[test]
+    fn a_json_parameter_with_a_space_is_quoted_like_a_shell_argument() {
+        let command = generated(r#"\gen 'SELECT 1' --param 'genre="science fiction"'"#);
+
+        assert_eq!(
+            command.options.parameters,
+            vec![binding("genre=\"science fiction\"")]
+        );
+    }
+
+    #[test]
+    fn a_quote_that_is_never_closed_is_refused() {
+        assert!(matches!(
+            "\\gen 'SELECT 1".parse::<MetaCommand>(),
+            Err(FsqError::UnclosedQuote(_))
+        ));
+    }
+
     #[test]
     fn a_recursive_listing_takes_a_depth_and_a_sample_in_any_order() {
-        assert_eq!(
-            parsed("\\l --recursive"),
-            MetaCommand::ListCollections(Some(CollectionTreeTarget::default()))
-        );
         let target = CollectionTreeTarget {
             depth: "3".parse().expect("a depth"),
             sample: "5".parse().expect("a sample size"),
@@ -325,31 +363,6 @@ mod tests {
             parsed("\\l --sample 5 --depth 3 --recursive"),
             MetaCommand::ListCollections(Some(target))
         );
-    }
-
-    #[test]
-    fn a_depth_or_a_sample_needs_recursive() {
-        match "\\l --depth 3".parse::<MetaCommand>() {
-            Err(FsqError::InvalidMetaArgument(InvalidMetaArgument {
-                command, argument, ..
-            })) => {
-                assert_eq!(command, "\\l");
-                assert_eq!(argument, "--depth");
-            }
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_depth_is_a_whole_number_of_one_or_more() {
-        assert!(matches!(
-            "\\l --recursive --depth 0".parse::<MetaCommand>(),
-            Err(FsqError::InvalidTreeDepth(_))
-        ));
-        assert!(matches!(
-            "\\l --recursive --depth".parse::<MetaCommand>(),
-            Err(FsqError::MissingMetaArgument(_))
-        ));
     }
 
     #[test]

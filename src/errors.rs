@@ -27,6 +27,10 @@ pub enum FsqError {
     #[error(transparent)]
     MissingMetaArgument(MissingMetaArgument),
     #[error(transparent)]
+    UnclosedQuote(UnclosedQuote),
+    #[error("{}", .0.to_string().trim().trim_start_matches("error: "))]
+    MetaArguments(#[from] clap::Error),
+    #[error(transparent)]
     InvalidParameter(InvalidParameter),
     #[error("no SELECT has run yet: give \\gen one")]
     NoSelectToGenerate,
@@ -102,6 +106,13 @@ pub struct InvalidMetaArgument {
 pub struct MissingMetaArgument {
     pub command: &'static str,
     pub expected: &'static str,
+}
+
+#[derive(Debug, Error)]
+#[error("{command} was given a quote that is never closed: {arguments}")]
+pub struct UnclosedQuote {
+    pub command: &'static str,
+    pub arguments: String,
 }
 
 #[derive(Debug, Error)]

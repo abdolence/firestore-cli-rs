@@ -790,6 +790,7 @@ dependencies = [
  "reedline",
  "serde",
  "serde_json",
+ "shlex",
  "sqlparser",
  "thiserror",
  "tokio",

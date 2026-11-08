@@ -70,9 +70,18 @@ A statement ends with `;` and can span several lines. A line that starts with `\
 | `\c <database>` | connects to another database of the project |
 | `\timing [on\|off]` | adds the round trip time and the execution stats to the footer |
 | `\wait [on\|off]` | waits for `CREATE INDEX` and `ALTER COLLECTION` to finish, on by default |
-| `\gen [SELECT] [--param name=value] [--sample N] [--offline]` | shows the fluent Rust code of a `SELECT`, or of the last one that ran, see [Fluent Rust code](#fluent-rust-code) |
+| `\gen ['SELECT'] [--param NAME=VALUE] [--sample N] [--offline]` | shows the fluent Rust code of a `SELECT`, or of the last one that ran, see [Fluent Rust code](#fluent-rust-code) |
 | `\?` | lists the meta-commands |
 | `\q` | quits, as Ctrl-D does |
+
+The arguments of `\l`, `\d` and `\gen` are split as a shell splits them, so text that holds spaces or quotes is
+quoted. `\gen` takes its `SELECT` as one argument, and a JSON string for `--param` is quoted twice:
+
+```
+\gen 'SELECT title FROM books WHERE genre = @genre' --param 'genre="science fiction"'
+```
+
+A `SELECT` that holds single quotes goes in double quotes.
 
 Tab completes a collection after `FROM`, `JOIN`, `INTO`, `UPDATE`, `COLLECTION`, `\d` and the `ON` of
 `CREATE INDEX`, a meta-command at the start of a line, and otherwise a keyword or a field of the rows and descriptions
@@ -262,8 +271,8 @@ fsq -p my-project -d my-database codegen \
 `codegen` prints the Rust code that the `codegen` feature of the firestore crate generates for a `SELECT`: a row
 struct, and an async function that runs the equivalent pipeline of the fluent API. It is meant for porting a
 statement to application code, and the output is a starting point to paste and edit. fsq prints what the crate
-returns and generates nothing itself. `\gen <SELECT>` in the REPL does the same, and `\gen` alone uses the last
-`SELECT` that ran. The output is highlighted when it goes to a terminal.
+returns and generates nothing itself. `\gen '<SELECT>'` in the REPL does the same, and `\gen` alone uses the last
+`SELECT` that ran.
 
 | Option | What it does |
 |---|---|

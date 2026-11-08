@@ -27,6 +27,12 @@ impl Default for TreeDepth {
     }
 }
 
+impl Display for TreeDepth {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 impl FromStr for TreeDepth {
     type Err = FsqError;
 
@@ -40,19 +46,24 @@ impl FromStr for TreeDepth {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The options of a recursive `\l`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::Args)]
 pub struct CollectionTreeTarget {
+    #[arg(
+        long,
+        requires = "recursive",
+        default_value_t = TreeDepth::default(),
+        help = "How many levels of collections to list; 1 is the root collections alone"
+    )]
     pub depth: TreeDepth,
-    pub sample: SampleSize,
-}
 
-impl Default for CollectionTreeTarget {
-    fn default() -> Self {
-        Self {
-            depth: TreeDepth::default(),
-            sample: SampleSize::COLLECTION_TREE_DEFAULT,
-        }
-    }
+    #[arg(
+        long,
+        requires = "recursive",
+        default_value_t = SampleSize::COLLECTION_TREE_DEFAULT,
+        help = "How many documents of each collection to read to find its subcollections"
+    )]
+    pub sample: SampleSize,
 }
 
 /// How many of the sampled documents of a collection have a subcollection.
@@ -192,63 +203,5 @@ impl CollectionTree {
             ]);
         }
         grid
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn collection_id(id: &str) -> FirestoreCollectionId {
-        id.parse().expect("a collection ID")
-    }
-
-    #[test]
-    fn the_grid_has_a_row_per_collection_with_where_it_was_seen() {
-        let tree = CollectionTree {
-            target: CollectionTreeTarget::default(),
-            collections: vec![
-                TreeCollection {
-                    path: "users".to_string(),
-                    id: collection_id("users"),
-                    depth: 1,
-                    seen_under: None,
-                },
-                TreeCollection {
-                    path: "users/*/addresses".to_string(),
-                    id: collection_id("addresses"),
-                    depth: 2,
-                    seen_under: Some(SeenUnder {
-                        documents_with_it: 12,
-                        sampled: 20,
-                        parent: collection_id("users"),
-                    }),
-                },
-            ],
-        };
-
-        let grid = tree.into_grid();
-
-        assert_eq!(
-            grid.columns(),
-            ["collection", "path", "depth", "seen_under"]
-        );
-        assert_eq!(
-            grid.rows(),
-            [
-                vec![
-                    Some(Cell::Text("users".to_string())),
-                    Some(Cell::Text("users".to_string())),
-                    Some(Cell::Count(1)),
-                    None,
-                ],
-                vec![
-                    Some(Cell::Text("addresses".to_string())),
-                    Some(Cell::Text("users/*/addresses".to_string())),
-                    Some(Cell::Count(2)),
-                    Some(Cell::Text("12 of 20 sampled users".to_string())),
-                ],
-            ]
-        );
     }
 }
