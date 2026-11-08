@@ -4,7 +4,10 @@ use serde_json::Value;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// How long after its stamp the index of a killed run is deleted by the next one.
+const STALE_AFTER: Duration = Duration::from_secs(60 * 60);
 
 struct Run {
     succeeded: bool,
@@ -40,12 +43,42 @@ fn fsq(arguments: &[&str], stdin: &str) -> Run {
     }
 }
 
-fn unique_name(prefix: &str) -> String {
-    let nanos = SystemTime::now()
+fn nanos_since_epoch() -> u128 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("a time after the epoch")
-        .as_nanos();
-    format!("{prefix}-{nanos}")
+        .as_nanos()
+}
+
+fn unique_name(prefix: &str) -> String {
+    format!("{prefix}-{}", nanos_since_epoch())
+}
+
+/// Deletes the indexes of `fsq-live-` groups whose stamp is older than `STALE_AFTER`. A killed
+/// run leaves its indexes behind, and they count toward the database's limit of 200.
+fn delete_stale_indexes() {
+    let cutoff = nanos_since_epoch() - STALE_AFTER.as_nanos();
+    let listing = fsq(&["--format", "jsonl", "index", "list"], "");
+    assert!(listing.succeeded, "{}", listing.stderr);
+    for row in listing
+        .stdout
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("a JSON line"))
+    {
+        let stamp = row["collection_group"].as_str().and_then(|group| {
+            group
+                .strip_prefix("fsq-live-")?
+                .rsplit_once('-')?
+                .1
+                .parse::<u128>()
+                .ok()
+        });
+        if let (Some(id), Some(stamp)) = (row["id"].as_str(), stamp) {
+            if stamp < cutoff {
+                fsq(&["index", "delete", id, "--if-exists"], "");
+            }
+        }
+    }
 }
 
 /// Deletes the documents of the collections it names when the test ends, even when it fails.
@@ -184,6 +217,7 @@ fn import_counts_a_repeated_document_by_its_conflict_policy() {
         unique_name("fsq-live-stops"),
         unique_name("fsq-live-goes-on"),
         unique_name("fsq-live-replaces"),
+        unique_name("fsq-live-skips"),
     ];
     let _cleanup = Collections(roots.to_vec());
 
@@ -226,10 +260,28 @@ fn import_counts_a_repeated_document_by_its_conflict_policy() {
         "{}",
         replaces.stderr
     );
+
+    let skips = fsq(
+        &["import", "-", "--on-conflict", "skip"],
+        &lines_naming_d1_three_times(&roots[3]),
+    );
+    assert!(skips.succeeded, "{}", skips.stderr);
+    assert!(
+        skips
+            .stderr
+            .contains("2 documents written, 2 skipped, 0 failed"),
+        "{}",
+        skips.stderr
+    );
+    assert_eq!(
+        exported_names(&roots[3], false),
+        [format!("{}/d1", roots[3]), format!("{}/d2", roots[3])]
+    );
 }
 
 #[test]
 fn sync_declares_the_indexes_of_every_group_of_the_file() {
+    delete_stale_indexes();
     let groups = [unique_name("fsq-live-sync"), unique_name("fsq-live-sync")];
     let file: PathBuf = std::env::temp_dir().join(format!("{}.json", groups[0]));
     let indexes: Vec<Value> = groups
