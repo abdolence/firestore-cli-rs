@@ -1,6 +1,6 @@
 [package]
 name = "firestore-cli"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Abdulla Abdurakhmanov <me@abdolence.dev>"]
 edition = "2021"
 rust-version = "1.91"

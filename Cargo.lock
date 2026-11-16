@@ -780,7 +780,7 @@ dependencies = [
 
 [[package]]
 name = "firestore-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "clap",
  "comfy-table",
