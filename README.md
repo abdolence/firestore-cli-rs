@@ -382,33 +382,48 @@ to show what it holds, at any depth.
 
 ```
 books  WHERE pages > 100 LIMIT 100
-┌ documents 2/2 ───────┐┌ dune ────────────────────────────────────────────────┐
-│draft                 ││▾ address        map       {city, zip}                │
-│dune                  ││    city         string    London                     │
-│                      ││    zip          string    N1 9GU                     │
-│                      ││  author         reference authors/herbert            │
-│                      ││  pages          integer   412                        │
-│                      ││  published      timestamp 2023-11-14T22:13:20Z       │
-│                      ││  rating         double    4.5                        │
-│                      ││▸ tags           array     [2 items]                  │
-│                      ││  title          string    Dune                       │
-│                      ││▸ subcollections                                      │
-└──────────────────────┘└──────────────────────────────────────────────────────┘
-↑↓ move · → open · Tab pane · / filter                                    q quit
+┌ 2/2 ─────┐┌ dune ────────────────────────────────────────────────────────────┐
+│ draft    ││ ▾ address    map                                                 │
+│▌dune     ││▌    city     string      London                                  │
+│          ││     zip      string      N1 9GU                                  │
+│          ││   author     reference   authors/herbert                         │
+│          ││   blurb      string      A desert planet, a spice that extends l…│
+│          ││   cover      bytes       4 bytes                                 │
+│          ││   in_print   boolean     true                                    │
+│          ││   location   geopoint    (51.5, -0.12)                           │
+│          ││   pages      integer     412                                     │
+│          ││   published  timestamp   2023-11-14T22:13:20Z                    │
+│          ││   rating     double      4.5                                     │
+│          ││   subtitle               NULL                                    │
+│          ││ ▸ tags       array       [2 items]                               │
+│          ││   title      string      Dune                                    │
+│          ││                                                                  │
+│          ││ ▸ subcollections                                                 │
+└──────────┘└ address.city ────────────────────────────────────────────────────┘
+↑↓ move · → open · Tab pane · / filter                           ? help · q quit
 ```
+
+In the documents and the tree:
 
 | Key | What it does |
 |---|---|
-| ↑ and ↓, `k` and `j`, Page Up, Page Down, Home, End | moves the cursor |
-| →, `l`, Enter | opens the map, array or subcollection under the cursor; in the documents, moves to the tree |
-| ←, `h` | closes the map or array under the cursor, or moves to the one it is in; at the top level of the tree, moves back to the documents |
+| ↑ and ↓, `k` and `j` | moves the cursor |
+| Page Up and Page Down, Ctrl-U and Ctrl-D | moves the cursor a page, or half a page |
+| `g` and `G`, Home and End | moves the cursor to the first or the last row |
+| →, `l` | opens the map, array or subcollection under the cursor; in the documents, moves to the tree |
+| Enter | shows the value under the cursor whole in a popup, a box over the panes that takes every key until Esc closes it. A closed map or array opens as with →, and shows whole on the next Enter |
+| Space | opens the map, array or subcollections under the cursor, or closes them when they are open |
+| ←, `h` | closes the map or array under the cursor, or moves to the one it is in; at the top level of the tree, moves back to the documents; in the documents, goes back up as Esc does |
 | Tab | switches between the documents and the tree |
 | `/` | edits the filter on the bottom line, in place of the keys |
+| `r` | reads the documents again with the filter they were read with, and keeps the selected document and its tree |
 | Esc, Backspace | goes back up from a subcollection to the document it was opened from |
-| Ctrl-C | stops waiting for Firestore; with nothing loading, closes the filter editor; with neither, quits |
+| Ctrl-G | shows the whole error of a failed filter or listing in a popup |
+| `?` | lists every key in a popup |
+| Ctrl-C | stops waiting for Firestore; with nothing loading, closes the popup or the filter editor; with neither, quits |
 | `q` | quits, and in the REPL returns to the prompt |
 
-In the filter editor:
+In the filter editor, every character key types into the filter, `g`, `r` and `?` too:
 
 | Key | What it does |
 |---|---|
@@ -417,8 +432,24 @@ In the filter editor:
 | Ctrl-W, Ctrl-U | deletes the word before the cursor, or everything before it |
 | Enter | runs the filter |
 | Esc | closes the editor and keeps the filter before |
+| Ctrl-G | shows the whole error of the filter that failed in a popup |
+
+In a popup:
+
+| Key | What it does |
+|---|---|
+| ↑ and ↓, `k` and `j`, Page Up and Page Down, Ctrl-U and Ctrl-D | scrolls by a line, a page or half a page |
+| `g` and `G`, Home and End | scrolls to the start or the end |
+| Esc | closes the popup |
 
 Pasted text goes into the editor as one line, and a filter longer than the line scrolls to keep the cursor in view.
+
+```
+┌ blurb · string · 60 chars ────────────────┐
+│A desert planet, a spice that extends life,│
+│and a duke's son                           │
+└ Esc close ────────────────────────────────┘
+```
 
 * the filter is the end of a `SELECT` after its `FROM`, such as `WHERE`, `ORDER BY`, `LIMIT` and `OFFSET`. fsq runs
   ``SELECT * FROM `<collection>` `` with the filter after it, and adds `LIMIT 100` when the filter has no `LIMIT` of its
@@ -428,17 +459,32 @@ Pasted text goes into the editor as one line, and a filter longer than the line 
   dropped;
 * the header shows the path down to the collection, then the filter the documents on screen were read with, cut in the
   middle when it is longer than the line;
+* the documents pane is as wide as the longest document ID, at least 12 columns and at most 35% of the terminal. An ID
+  longer than that is cut in the middle, with a `…` in place of what is left out;
 * the title of the documents shows the position of the cursor and the count, such as `58/100`, with a `+` when the
   count is the limit, so more documents may exist. While the browser waits for Firestore, the title shows a spinner
-  and the seconds waited, and after Ctrl-C it shows `stopped`;
+  and the seconds waited, and after Ctrl-C it shows `stopped`. A narrow pane leaves out the word `documents` first;
+* the tree has a column of names, one of types and one of values. The names column is as wide as the longest field
+  name of the whole document, at any depth, and at most a third of the pane, so the values stay in place when a map
+  opens and when the next document has the same fields. A tree narrower than 50 columns leaves out the types. A name
+  is cut in the middle and a value at its end, each with a `…`, and Enter shows the value whole;
+* an open map or array has no summary on its own row, since its fields show on the rows under it, and a null shows as
+  `NULL` with no type;
+* the bottom border of the tree shows the path of the row under the cursor, as SQL reads it: `address.city`,
+  `tags[0]`, `` `location` `` for a name SQL reserves, and the collection path on a subcollection;
+* the popup of a value has its path, its type and its size in the title. A string wraps at words, a map or an array
+  shows as indented JSON-like text, and bytes show in hexadecimal after the offset of each line;
 * a filter that does not parse, or that Firestore refuses, stays in the editor with its error under it, and the
   documents read before it stay under their own filter. Esc closes the editor, and `/` opens the filter that failed
-  again. In the error, the filter is line 2 of the statement;
+  again. In the error, the filter is line 2 of the statement. An error longer than four lines ends in `…`, and Ctrl-G
+  shows it whole;
 * an empty result says so in place of the tree. Firestore answers a path that holds no documents the same way as a
   mistyped one;
-* the last row of the tree is `subcollections`. Opening it lists the collections under the document, and opening one
-  of them browses it without a filter. A listing that fails shows its error under the keys. Esc returns to the
-  document as it was left;
+* the last row of the tree is `subcollections`, a line apart from the fields and in italics, since a document can
+  have a field of that name. Opening it lists the collections under the document, and opening one of them browses it
+  without a filter. A listing that fails shows its error under the keys. Esc returns to the document as it was left;
+* the cursor is a bar in the terminal's own colours, and the selected row of each pane starts with a `▌`, so the pane
+  without the focus shows its selection too;
 * with `NO_COLOR` set, the browser draws without colours, and keeps bold, dim and reverse video, so the cursor still
   shows;
 * the browser needs a terminal on stdin and stdout, so `\browse` in piped input, or with stdout sent to a pipe or a
