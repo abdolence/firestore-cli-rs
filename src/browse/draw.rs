@@ -1006,6 +1006,28 @@ mod tests {
     }
 
     #[test]
+    fn esc_on_a_failed_new_filter_hides_its_error_and_keeps_the_failed_title_and_ctrl_g() {
+        let mut browser = browser_of("books", "", vec![draft(), dune()]);
+        edit_filter(&mut browser, "WHERE pagez > 100");
+        browser.update(Message::RunFilter);
+        browser.update(Message::DocumentsLoaded {
+            request: query_of(&browser),
+            outcome: Err(firestore_error("Unrecognized field name 'pagez'")),
+        });
+        browser.update(Message::CancelFilter);
+
+        let lines = TestScreen::new(80, 24).draw(&browser);
+
+        assert!(lines[1].contains("failed"), "{}", lines[1]);
+        let keys = lines[23].trim_end();
+        assert!(
+            keys.ends_with("q quit") && keys.contains("Ctrl-G"),
+            "{keys}"
+        );
+        line_with(&lines, "dune");
+    }
+
+    #[test]
     fn a_failed_listing_shows_its_error_under_the_footer() {
         let mut browser = browser_of("books", "", vec![dune()]);
         browser.update(Message::Expand);

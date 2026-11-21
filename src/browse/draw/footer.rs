@@ -1,6 +1,6 @@
 use super::Viewport;
 use crate::browse::editor::FilterEditor;
-use crate::browse::state::{Browser, Copied, Failure, FilterTail, BROWSE_DOCUMENT_LIMIT};
+use crate::browse::state::{Browser, Copied, Failure, FilterTail, Load, BROWSE_DOCUMENT_LIMIT};
 use crate::browse::tree::Row;
 use crate::errors::FsqError;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -80,9 +80,17 @@ impl Browser {
     }
 
     /// The error under the footer, the one Ctrl-G shows whole, wrapped at words to `width`
-    /// columns.
+    /// columns. A new filter that failed shows its error only under the editor: under the keys,
+    /// it would sit beside the documents and the header of the filter before.
     pub(super) fn footer_error(&self, width: usize) -> Vec<Line<'static>> {
-        self.failure()
+        let level = self.level();
+        let new_filter_failed =
+            matches!(level.load(), Load::Failed { filter, .. } if filter != level.filter());
+        let failure = match self.failure() {
+            Some(Failure::Query) if new_filter_failed && self.filter_editor().is_none() => None,
+            failure => failure,
+        };
+        failure
             .and_then(|failure| self.error(failure))
             .map(|error| error.footer_lines(width))
             .unwrap_or_default()
