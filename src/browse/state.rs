@@ -1,9 +1,10 @@
+use super::editor::{Edit, FilterEditor};
 use super::tree::{Expansion, Tree};
 use super::BrowseTarget;
 use crate::describe::CollectionPath;
 use crate::errors::{FsqError, FsqResult};
 use firestore::{FirestoreCollectionId, FirestoreDb, FirestoreDocument};
-use sqlparser::ast::{LimitClause, Statement};
+use sqlparser::ast::{Expr, LimitClause, Statement, Value, ValueWithSpan};
 use sqlparser::dialect::BigQueryDialect;
 use sqlparser::parser::Parser;
 use std::fmt::{Display, Formatter};
@@ -21,21 +22,37 @@ impl FilterTail {
         self.0.is_empty()
     }
 
-    /// Whether the query this filter ends has a `LIMIT` count, as the parser the firestore crate
+    /// Whether the query this filter ends has a `LIMIT` count of its own.
+    pub fn has_limit(&self) -> bool {
+        self.limit().is_some()
+    }
+
+    /// The most documents the query of this filter reads: its own `LIMIT` when that is a number,
+    /// else [`BROWSE_DOCUMENT_LIMIT`] when it has none. `None` for a `LIMIT` that is not a number.
+    pub fn effective_limit(&self) -> Option<usize> {
+        match self.limit() {
+            None => Some(BROWSE_DOCUMENT_LIMIT),
+            Some(Expr::Value(ValueWithSpan {
+                value: Value::Number(count, _),
+                ..
+            })) => count.parse().ok(),
+            Some(_) => None,
+        }
+    }
+
+    /// The `LIMIT` count of the query this filter ends, as the parser the firestore crate
     /// translates with reads it. A field named `limit`, the `LIMIT` of a subquery and an `OFFSET`
     /// alone bound nothing, and a filter that does not parse has no limit.
-    pub fn has_limit(&self) -> bool {
+    fn limit(&self) -> Option<Expr> {
         let statement = format!("SELECT * FROM t\n{}", self.0);
-        let Ok(statements) = Parser::parse_sql(&BigQueryDialect {}, &statement) else {
-            return false;
-        };
+        let statements = Parser::parse_sql(&BigQueryDialect {}, &statement).ok()?;
         let [Statement::Query(query)] = statements.as_slice() else {
-            return false;
+            return None;
         };
         match &query.limit_clause {
-            Some(LimitClause::LimitOffset { limit, .. }) => limit.is_some(),
-            Some(LimitClause::OffsetCommaLimit { .. }) => true,
-            None => false,
+            Some(LimitClause::LimitOffset { limit, .. }) => limit.clone(),
+            Some(LimitClause::OffsetCommaLimit { limit, .. }) => Some(limit.clone()),
+            None => None,
         }
     }
 }
@@ -104,6 +121,10 @@ pub enum Load {
         request: RequestId,
         filter: FilterTail,
     },
+    /// Ctrl-C stopped the query of `filter`, and the documents before it stay.
+    Stopped {
+        filter: FilterTail,
+    },
     /// The query of `filter` failed, and the documents before it stay.
     Failed {
         error: FsqError,
@@ -118,7 +139,8 @@ pub struct Level {
     /// The filter the documents were read with. A filter that is still running or failed is in
     /// [`Load`] instead, so that this one never names documents it did not read.
     filter: FilterTail,
-    documents: Vec<FirestoreDocument>,
+    /// `None` until the first query of the level answers.
+    documents: Option<Vec<FirestoreDocument>>,
     /// The position of the selected document, 0 when there are none.
     selected: usize,
     tree: Tree,
@@ -135,23 +157,20 @@ impl Level {
         Self {
             path,
             filter,
-            documents: Vec::new(),
+            documents: None,
             selected: 0,
             tree: Tree::default(),
             load: pending,
         }
     }
 
-    /// Stops waiting for the pending query, if there is one: the documents before it stay, and
-    /// the query counts as interrupted. `false` when no query was pending.
+    /// Stops waiting for the pending query, if there is one, and the documents before it stay.
+    /// `false` when no query was pending.
     fn stop_waiting(&mut self) -> bool {
         let Load::Pending { filter, .. } = std::mem::replace(&mut self.load, Load::Done) else {
             return false;
         };
-        self.load = Load::Failed {
-            error: FsqError::Interrupted,
-            filter,
-        };
+        self.load = Load::Stopped { filter };
         true
     }
 
@@ -166,7 +185,9 @@ impl Level {
     /// The filter the next edit starts from: the one that last ran, whether or not it answered.
     fn filter_to_edit(&self) -> &FilterTail {
         match &self.load {
-            Load::Pending { filter, .. } | Load::Failed { filter, .. } => filter,
+            Load::Pending { filter, .. }
+            | Load::Stopped { filter }
+            | Load::Failed { filter, .. } => filter,
             Load::Done => &self.filter,
         }
     }
@@ -179,8 +200,9 @@ impl Level {
         &self.filter
     }
 
-    pub fn documents(&self) -> &[FirestoreDocument] {
-        &self.documents
+    /// The documents of the last query that answered, `None` before the first one has.
+    pub fn documents(&self) -> Option<&[FirestoreDocument]> {
+        self.documents.as_deref()
     }
 
     pub fn selected(&self) -> usize {
@@ -188,7 +210,7 @@ impl Level {
     }
 
     pub fn selected_document(&self) -> Option<&FirestoreDocument> {
-        self.documents.get(self.selected)
+        self.documents.as_ref()?.get(self.selected)
     }
 
     pub fn tree(&self) -> &Tree {
@@ -241,8 +263,7 @@ pub enum Message {
     /// Goes back up to the collection the current one was opened from.
     Back,
     EditFilter,
-    FilterInput(char),
-    FilterDelete,
+    Edit(Edit),
     /// Text pasted at once, which goes into the filter being edited as one line. With no filter
     /// being edited it is dropped.
     Paste(String),
@@ -284,8 +305,7 @@ pub struct Browser {
     /// The levels the current one was opened from, the first one the browser opened first.
     parents: Vec<Level>,
     focus: Pane,
-    /// The text of the filter being edited, while it is.
-    filter_editor: Option<String>,
+    filter_editor: Option<FilterEditor>,
     documents_path: String,
     last_request: RequestId,
 }
@@ -320,21 +340,16 @@ impl Browser {
             }
             Message::Back => return self.back(),
             Message::EditFilter => {
-                self.filter_editor = Some(self.current.filter_to_edit().to_string())
+                self.filter_editor = Some(FilterEditor::from(self.current.filter_to_edit()))
             }
-            Message::FilterInput(typed) => {
-                if let Some(text) = &mut self.filter_editor {
-                    text.push(typed);
-                }
-            }
-            Message::FilterDelete => {
-                if let Some(text) = &mut self.filter_editor {
-                    text.pop();
+            Message::Edit(edit) => {
+                if let Some(editor) = &mut self.filter_editor {
+                    editor.apply(edit);
                 }
             }
             Message::Paste(pasted) => {
-                if let Some(text) = &mut self.filter_editor {
-                    text.push_str(&pasted.replace("\r\n", " ").replace(['\r', '\n'], " "));
+                if let Some(editor) = &mut self.filter_editor {
+                    editor.paste(&pasted);
                 }
             }
             Message::RunFilter => return self.run_filter(),
@@ -358,14 +373,15 @@ impl Browser {
         let level = &mut self.current;
         match self.focus {
             Pane::Documents => {
-                let selected = movement.applied_to(level.selected, level.documents.len());
+                let count = level.documents().map_or(0, <[_]>::len);
+                let selected = movement.applied_to(level.selected, count);
                 if selected != level.selected {
                     level.selected = selected;
                     level.tree = Tree::default();
                 }
             }
             Pane::Tree => {
-                if let Some(document) = level.documents.get(level.selected) {
+                if let Some(document) = level.selected_document() {
                     let rows = level.tree.rows(document).len();
                     let row = movement.applied_to(level.tree.cursor(), rows);
                     level.tree.select(row);
@@ -376,7 +392,7 @@ impl Browser {
 
     fn expand(&mut self) -> Option<Effect> {
         let level = &mut self.current;
-        let document = level.documents.get(level.selected)?;
+        let document = level.documents.as_ref()?.get(level.selected)?;
         if self.focus == Pane::Documents {
             self.focus = Pane::Tree;
             return None;
@@ -412,7 +428,11 @@ impl Browser {
 
     fn collapse(&mut self) {
         let level = &mut self.current;
-        let Some(document) = level.documents.get(level.selected) else {
+        let Some(document) = level
+            .documents
+            .as_ref()
+            .and_then(|documents| documents.get(level.selected))
+        else {
             return;
         };
         if self.focus == Pane::Tree && !level.tree.collapse(document) {
@@ -429,10 +449,10 @@ impl Browser {
     }
 
     fn run_filter(&mut self) -> Option<Effect> {
-        let text = self.filter_editor.take()?;
+        let editor = self.filter_editor.take()?;
         let request = self.next_request();
         let level = &mut self.current;
-        let filter = FilterTail::from(text.as_str());
+        let filter = FilterTail::from(editor.text());
         let query = level.query(request, filter.clone());
         level.load = Load::Pending { request, filter };
         Some(Effect::Query(query))
@@ -450,6 +470,9 @@ impl Browser {
         }
     }
 
+    /// Keeps the answer to the query `request`, unless the browser stopped waiting for it. A
+    /// failed filter opens in the editor, unless the editor is open already with what the user is
+    /// typing.
     fn loaded(&mut self, request: RequestId, outcome: FsqResult<Vec<FirestoreDocument>>) {
         let level = &mut self.current;
         if !matches!(&level.load, Load::Pending { request: pending, .. } if *pending == request) {
@@ -460,12 +483,16 @@ impl Browser {
         };
         match outcome {
             Ok(documents) => {
-                level.documents = documents;
+                level.documents = Some(documents);
                 level.filter = filter;
                 level.selected = 0;
                 level.tree = Tree::default();
             }
-            Err(error) => level.load = Load::Failed { error, filter },
+            Err(error) => {
+                self.filter_editor
+                    .get_or_insert_with(|| FilterEditor::from(&filter));
+                level.load = Load::Failed { error, filter };
+            }
         }
     }
 
@@ -482,8 +509,8 @@ impl Browser {
         self.focus
     }
 
-    pub fn filter_editor(&self) -> Option<&str> {
-        self.filter_editor.as_deref()
+    pub fn filter_editor(&self) -> Option<&FilterEditor> {
+        self.filter_editor.as_ref()
     }
 
     pub fn has_parent(&self) -> bool {
@@ -535,6 +562,19 @@ mod tests {
             outcome: Ok(vec![draft(), dune()]),
         });
         browser
+    }
+
+    /// Opens the filter editor, types `text` into it and runs it.
+    fn run_filter(browser: &mut Browser, text: &str) -> DocumentsQuery {
+        browser.update(Message::EditFilter);
+        for typed in text.chars() {
+            browser.update(Message::Edit(Edit::Insert(typed)));
+        }
+        query_of(browser.update(Message::RunFilter))
+    }
+
+    fn edited_text(browser: &Browser) -> Option<&str> {
+        browser.filter_editor().map(FilterEditor::text)
     }
 
     fn selected_id(browser: &Browser) -> Option<&str> {
@@ -636,14 +676,27 @@ mod tests {
     }
 
     #[test]
+    fn the_effective_limit_is_the_count_of_the_filter_else_the_default() {
+        assert_eq!(FilterTail::default().effective_limit(), Some(100));
+        assert_eq!(
+            FilterTail::from("WHERE quota.limit > 5").effective_limit(),
+            Some(100)
+        );
+        assert_eq!(
+            FilterTail::from("ORDER BY title LIMIT 5").effective_limit(),
+            Some(5)
+        );
+        assert_eq!(
+            FilterTail::from("ORDER BY title LIMIT 2 + 3").effective_limit(),
+            None
+        );
+    }
+
+    #[test]
     fn a_failed_query_keeps_the_documents_read_before_it() {
         let mut browser = browser();
-        browser.update(Message::EditFilter);
-        for typed in "WHERE".chars() {
-            browser.update(Message::FilterInput(typed));
-        }
 
-        let query = query_of(browser.update(Message::RunFilter));
+        let query = run_filter(&mut browser, "WHERE");
         browser.update(Message::DocumentsLoaded {
             request: query.request,
             outcome: Err(FsqError::NoProject),
@@ -657,21 +710,42 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(browser.level().documents().len(), 2);
+        assert_eq!(browser.level().documents().map(<[_]>::len), Some(2));
+    }
+
+    #[test]
+    fn a_failed_filter_reopens_in_the_editor() {
+        let mut browser = browser();
+
+        let query = run_filter(&mut browser, "WHERE pagez > 100");
+        browser.update(Message::DocumentsLoaded {
+            request: query.request,
+            outcome: Err(FsqError::NoProject),
+        });
+
+        assert_eq!(edited_text(&browser), Some("WHERE pagez > 100"));
+    }
+
+    #[test]
+    fn a_failure_leaves_a_filter_being_typed_as_it_is() {
+        let mut browser = browser();
+        let query = run_filter(&mut browser, "WHERE pagez > 100");
+        browser.update(Message::EditFilter);
+        browser.update(Message::Edit(Edit::DeleteWordBefore));
+
+        browser.update(Message::DocumentsLoaded {
+            request: query.request,
+            outcome: Err(FsqError::NoProject),
+        });
+
+        assert_eq!(edited_text(&browser), Some("WHERE pagez > "));
     }
 
     #[test]
     fn the_filter_of_the_documents_shown_changes_only_when_the_new_one_has_answered() {
         let mut browser = browser();
-        let type_filter = |browser: &mut Browser, text: &str| {
-            browser.update(Message::EditFilter);
-            for typed in text.chars() {
-                browser.update(Message::FilterInput(typed));
-            }
-            query_of(browser.update(Message::RunFilter))
-        };
 
-        let failing = type_filter(&mut browser, "WHERE genre = 'fantasy'");
+        let failing = run_filter(&mut browser, "WHERE genre = 'fantasy'");
         assert_eq!(browser.level().filter(), &FilterTail::default());
         browser.update(Message::DocumentsLoaded {
             request: failing.request,
@@ -679,8 +753,9 @@ mod tests {
         });
         assert_eq!(browser.level().filter(), &FilterTail::default());
 
+        browser.update(Message::CancelFilter);
         browser.update(Message::EditFilter);
-        assert_eq!(browser.filter_editor(), Some("WHERE genre = 'fantasy'"));
+        assert_eq!(edited_text(&browser), Some("WHERE genre = 'fantasy'"));
         let query = query_of(browser.update(Message::RunFilter));
         browser.update(Message::DocumentsLoaded {
             request: query.request,
@@ -704,15 +779,22 @@ mod tests {
             outcome: Ok(Vec::new()),
         });
 
-        assert!(matches!(
-            browser.level().load(),
-            Load::Failed {
-                error: FsqError::Interrupted,
-                ..
-            }
-        ));
-        assert_eq!(browser.level().documents().len(), 2);
+        assert!(matches!(browser.level().load(), Load::Stopped { .. }));
+        assert_eq!(browser.level().documents().map(<[_]>::len), Some(2));
         assert_eq!(browser.update(Message::Interrupt), Some(Effect::Quit));
+    }
+
+    #[test]
+    fn a_stopped_filter_is_not_a_failure_and_reopens_with_slash() {
+        let mut browser = browser();
+        run_filter(&mut browser, "WHERE pages > 100");
+
+        browser.update(Message::Interrupt);
+
+        assert!(matches!(browser.level().load(), Load::Stopped { .. }));
+        assert_eq!(browser.filter_editor().map(FilterEditor::text), None);
+        browser.update(Message::EditFilter);
+        assert_eq!(edited_text(&browser), Some("WHERE pages > 100"));
     }
 
     #[test]
@@ -725,7 +807,7 @@ mod tests {
         assert_eq!(browser.update(Message::Interrupt), Some(Effect::Cancel));
         assert!(browser.filter_editor().is_some());
         assert_eq!(browser.update(Message::Interrupt), None);
-        assert_eq!(browser.filter_editor(), None);
+        assert!(browser.filter_editor().is_none());
         assert_eq!(browser.update(Message::Interrupt), Some(Effect::Quit));
     }
 
@@ -733,7 +815,7 @@ mod tests {
     fn a_paste_goes_into_the_filter_editor_as_one_line() {
         let mut browser = browser();
         assert_eq!(browser.update(Message::Paste("q".to_string())), None);
-        assert_eq!(browser.filter_editor(), None);
+        assert!(browser.filter_editor().is_none());
 
         browser.update(Message::EditFilter);
         browser.update(Message::Paste(
@@ -741,7 +823,7 @@ mod tests {
         ));
 
         assert_eq!(
-            browser.filter_editor(),
+            edited_text(&browser),
             Some("WHERE genre = 'sf' AND pages > 100 ORDER BY title LIMIT 5")
         );
     }

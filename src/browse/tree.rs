@@ -230,6 +230,10 @@ impl Tree {
         self.listing = Listing::Pending(request);
     }
 
+    pub fn listing(&self) -> &Listing {
+        &self.listing
+    }
+
     pub fn is_listing(&self) -> bool {
         matches!(self.listing, Listing::Pending(_))
     }

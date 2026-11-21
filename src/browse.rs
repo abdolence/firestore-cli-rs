@@ -3,6 +3,8 @@
 //! document one level further down.
 
 mod draw;
+mod editor;
+mod footer;
 mod state;
 mod tree;
 
@@ -18,6 +20,7 @@ use crossterm::event::{
 use crossterm::execute;
 use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
 use draw::Viewport;
+use editor::Edit;
 use firestore::{FirestoreCollectionId, FirestoreDb, FirestoreDocument, FirestoreSqlOptions};
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
@@ -28,6 +31,7 @@ use std::future::Future;
 use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
+use std::time::Instant;
 use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
@@ -105,13 +109,21 @@ fn message_for(key: KeyEvent, editing_filter: bool, page_rows: usize) -> Option<
         return Some(Message::Interrupt);
     }
     if editing_filter {
-        return match key.code {
-            KeyCode::Enter => Some(Message::RunFilter),
-            KeyCode::Esc => Some(Message::CancelFilter),
-            KeyCode::Backspace => Some(Message::FilterDelete),
-            KeyCode::Char(typed) if !control => Some(Message::FilterInput(typed)),
-            _ => None,
+        let edit = match key.code {
+            KeyCode::Enter => return Some(Message::RunFilter),
+            KeyCode::Esc => return Some(Message::CancelFilter),
+            KeyCode::Char('w') if control => Edit::DeleteWordBefore,
+            KeyCode::Char('u') if control => Edit::DeleteToStart,
+            KeyCode::Char(typed) if !control => Edit::Insert(typed),
+            KeyCode::Backspace => Edit::DeleteBefore,
+            KeyCode::Delete => Edit::DeleteAfter,
+            KeyCode::Left => Edit::Left,
+            KeyCode::Right => Edit::Right,
+            KeyCode::Home => Edit::Start,
+            KeyCode::End => Edit::End,
+            _ => return None,
         };
+        return Some(Message::Edit(edit));
     }
     let message = match key.code {
         KeyCode::Up | KeyCode::Char('k') => Message::Move(Movement::Up(1)),
@@ -150,6 +162,8 @@ static SCREEN_OVERWRITTEN: AtomicBool = AtomicBool::new(false);
 /// message prints.
 struct Screen {
     terminal: DefaultTerminal,
+    /// Whether colour is on, as for the rest of fsq: off with `NO_COLOR` set, for one.
+    colour: bool,
 }
 
 impl Screen {
@@ -174,7 +188,10 @@ impl Screen {
         });
         SCREEN_ACTIVE.store(true, Ordering::SeqCst);
         match Self::init_terminal() {
-            Ok(terminal) => Ok(Self { terminal }),
+            Ok(terminal) => Ok(Self {
+                terminal,
+                colour: console::colors_enabled(),
+            }),
             Err(error) => {
                 SCREEN_ACTIVE.store(false, Ordering::SeqCst);
                 Self::restore();
@@ -197,7 +214,13 @@ impl Screen {
         if SCREEN_OVERWRITTEN.swap(false, Ordering::SeqCst) {
             self.terminal.clear()?;
         }
-        self.terminal.draw(|frame| browser.draw(frame, viewport))?;
+        let now = Instant::now();
+        self.terminal.draw(|frame| {
+            browser.draw(frame, viewport, now);
+            if !self.colour {
+                draw::drop_hues(frame.buffer_mut());
+            }
+        })?;
         Ok(())
     }
 
