@@ -403,7 +403,7 @@ books  WHERE pages > 100 LIMIT 100
 ↑↓ move · → open · Tab pane · / filter · f where · y copy        ? help · q quit
 ```
 
-The essential keys; `?` lists the rest:
+The main keys are below, and `?` in the browser lists them all:
 
 | Key | What it does |
 |---|---|
@@ -425,10 +425,10 @@ The essential keys; `?` lists the rest:
 * in the REPL the rest of the line after the collection is the filter, kept as typed, so a string in it needs no extra
   quoting, and `--filter` is not a flag there. `fsq browse` takes it with `--filter`. A `;` at the end of the filter is
   dropped;
-* a filter typed in the editor that fails reopens in the editor with its error under it, and the documents read before
-  it stay. A read that fails otherwise, such as the first read of a collection, `r` or a subcollection opened, does not
-  open the editor, and its error shows under the keys at the bottom. Ctrl-G shows any error whole, and `/` opens the
-  filter that failed again;
+* a new filter that fails reopens in the editor with its error under it, and the documents read before it stay. A read
+  that fails otherwise, such as the first read of a collection, `r` or a subcollection opened, leaves the editor
+  closed, and its error shows under the keys at the bottom. Ctrl-G shows any error whole, and `/` opens the filter that
+  failed again;
 * the last row of the tree is `subcollections`. Opening it lists the collections under the document, and opening one
   of them browses it without a filter. Esc returns to the document as it was left;
 * `y` copies a string as its text, and any other value as one line of JSON in the tagged encoding `fsq export` writes,
