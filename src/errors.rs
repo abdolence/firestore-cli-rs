@@ -72,6 +72,8 @@ pub enum FsqError {
     PagerFailed(PagerFailed),
     #[error("interrupted")]
     Interrupted,
+    #[error("browse draws on the terminal, and stdin or stdout is not one")]
+    BrowseNeedsTerminal,
     #[error(transparent)]
     InputsFailed(InputsFailed),
     #[error(transparent)]

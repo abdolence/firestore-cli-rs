@@ -23,7 +23,7 @@ pub use index_changes::*;
 pub use output::*;
 pub use plan::*;
 pub use spinner::*;
-pub use value::type_name;
+pub use value::{sorted_keys, type_name};
 
 use clap::ValueEnum;
 use console::Style;

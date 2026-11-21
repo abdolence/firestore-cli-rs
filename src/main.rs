@@ -1,4 +1,5 @@
 mod args;
+mod browse;
 mod codegen;
 mod collection_tree;
 mod connection;
@@ -108,6 +109,10 @@ async fn run(args: CliArgs) -> FsqResult<()> {
             Session::new(connection, settings, Interaction::Script)
                 .describe(&target)
                 .await
+        }
+        CliCommand::Browse(target) => {
+            let connection = connect(args.project, args.database, args.format).await?;
+            browse::run(&connection, target).await
         }
         CliCommand::Codegen(codegen_args) => {
             let options = &codegen_args.options;

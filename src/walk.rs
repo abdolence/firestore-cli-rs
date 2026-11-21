@@ -43,6 +43,20 @@ impl<'a> Walk<'a> {
         Ok(listing.stream_all_with_errors().await?)
     }
 
+    /// The first `limit` documents of `path` by ID.
+    pub async fn first_documents(
+        &self,
+        path: &CollectionPath,
+        limit: usize,
+    ) -> FsqResult<Vec<FirestoreDocument>> {
+        Ok(self
+            .documents(path, false, Some(limit))
+            .await?
+            .take(limit)
+            .try_collect()
+            .await?)
+    }
+
     /// The names of the first `limit` documents, existing or not, taken in turn from each of
     /// `collections` until `limit` are found. Reads no more than `limit` documents in all.
     pub async fn first_document_names(

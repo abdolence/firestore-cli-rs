@@ -1,3 +1,4 @@
+use crate::browse::BrowseTarget;
 use crate::codegen::CodegenArgs;
 use crate::connection::{DatabaseId, ProjectId};
 use crate::describe::DescribeTarget;
@@ -56,6 +57,10 @@ pub enum CliCommand {
         about = "List the field paths of a collection, with their types, % present and an example value"
     )]
     Describe(DescribeTarget),
+    #[command(
+        about = "Browse the documents of a collection full screen: open maps, arrays and subcollections, and filter with the end of a SELECT"
+    )]
+    Browse(BrowseTarget),
     #[command(
         about = "Write the documents of a collection, or the rows of a SELECT, as JSON lines"
     )]

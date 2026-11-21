@@ -173,7 +173,7 @@ impl Display for TimestampText<'_> {
     }
 }
 
-pub(super) fn sorted_keys(fields: &HashMap<String, Value>) -> Vec<&String> {
+pub fn sorted_keys(fields: &HashMap<String, Value>) -> Vec<&String> {
     let mut keys: Vec<&String> = fields.keys().collect();
     keys.sort();
     keys

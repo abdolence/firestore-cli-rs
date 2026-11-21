@@ -133,6 +133,7 @@ impl Session {
             MetaCommand::ListCollections(None) => self.run_statement("SHOW COLLECTIONS").await?,
             MetaCommand::ListCollections(Some(target)) => self.list_collection_tree(target).await?,
             MetaCommand::Describe(target) => self.describe(&target).await?,
+            MetaCommand::Browse(target) => crate::browse::run(&self.connection, target).await?,
             MetaCommand::ExpandedRow(row) => self.show_row(row)?,
             MetaCommand::Expanded(mode) => {
                 self.settings.expanded = mode.unwrap_or(match self.settings.expanded {

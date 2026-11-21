@@ -12,7 +12,7 @@ use firestore::{
     FirestorePipelineSource, FirestorePipelineStage, FirestoreResult, FirestoreSampleSize,
     FirestoreSampleStage, FirestoreVector,
 };
-use futures::{StreamExt, TryStreamExt};
+use futures::TryStreamExt;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroU32;
@@ -49,6 +49,15 @@ impl CollectionPath {
         self.parent
             .as_ref()
             .map(|parent| format!("{documents_path}/{parent}"))
+    }
+}
+
+impl Display for CollectionPath {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match &self.parent {
+            Some(parent) => write!(f, "{parent}/{}", self.collection_id),
+            None => self.collection_id.fmt(f),
+        }
     }
 }
 
@@ -172,10 +181,7 @@ impl Description {
             Ok(documents) => documents,
             Err(error) if is_pipeline_refusal(&error) => {
                 Walk::new(db)
-                    .documents(collection, false, Some(size as usize))
-                    .await?
-                    .take(size as usize)
-                    .try_collect::<Vec<_>>()
+                    .first_documents(collection, size as usize)
                     .await?
             }
             Err(error) => return Err(error.into()),

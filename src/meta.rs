@@ -1,3 +1,4 @@
+use crate::browse::BrowseTarget;
 use crate::codegen::GenerateCommand;
 use crate::collection_tree::CollectionTreeTarget;
 use crate::connection::DatabaseId;
@@ -15,6 +16,9 @@ pub enum MetaCommand {
     /// `\l`, or with `--recursive` a walk of the collections below the root.
     ListCollections(Option<CollectionTreeTarget>),
     Describe(DescribeTarget),
+    /// `\browse <collection> [filter]`: the rest of the line after the collection is SQL, kept
+    /// as typed, quotes and all.
+    Browse(BrowseTarget),
     /// `\x` without an argument toggles between the table and the expanded view.
     Expanded(Option<ExpandedMode>),
     /// `\x full N`: row `N` of the last result in the expanded view, counting from 1.
@@ -73,6 +77,10 @@ pub const META_COMMANDS: &[MetaCommandHelp] = &[
     MetaCommandHelp {
         usage: "\\d <collection> [--sample N]",
         summary: "list a collection's field paths, types, % present and an example",
+    },
+    MetaCommandHelp {
+        usage: "\\browse <collection> [filter]",
+        summary: "browse a collection full screen, opening maps, arrays and subcollections; the filter is the end of a SELECT, such as WHERE genre = 'sf' LIMIT 20, and without a LIMIT the first 100 documents show",
     },
     MetaCommandHelp {
         usage: "\\x [on|off|auto|full [N]]",
@@ -140,6 +148,21 @@ impl FromStr for MetaCommand {
                 Self::ListCollections(recursive.then_some(target))
             }
             "\\d" => Self::Describe(parse_arguments("\\d", rest)?),
+            "\\browse" => {
+                let rest = rest.trim();
+                let (collection, filter) =
+                    rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                if collection.is_empty() {
+                    return Err(FsqError::missing_meta_argument(
+                        "\\browse",
+                        "a collection path",
+                    ));
+                }
+                Self::Browse(BrowseTarget {
+                    collection: collection.parse()?,
+                    filter: filter.into(),
+                })
+            }
             "\\x" => match rest.split_whitespace().collect::<Vec<_>>().as_slice() {
                 [full, row] if full.eq_ignore_ascii_case("full") => {
                     Self::ExpandedRow(row.parse().map_err(|_| {
@@ -258,6 +281,7 @@ fn optional_argument<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::browse::FilterTail;
     use crate::codegen::tests::binding;
     use crate::describe::SampleSize;
     use crate::errors::{InvalidMetaArgument, MissingMetaArgument};
@@ -396,6 +420,35 @@ mod tests {
         assert!(matches!(
             "\\frobnicate".parse::<MetaCommand>(),
             Err(FsqError::UnknownMetaCommand(UnknownMetaCommand { command })) if command == "\\frobnicate"
+        ));
+    }
+
+    #[test]
+    fn browse_keeps_the_rest_of_the_line_as_the_filter_quotes_and_all() {
+        assert_eq!(
+            parsed("\\browse users/alice/orders WHERE genre = 'sf'  LIMIT 5 "),
+            MetaCommand::Browse(BrowseTarget {
+                collection: "users/alice/orders".parse().expect("a collection path"),
+                filter: "WHERE genre = 'sf'  LIMIT 5".into(),
+            })
+        );
+        assert_eq!(
+            parsed("\\browse books"),
+            MetaCommand::Browse(BrowseTarget {
+                collection: "books".parse().expect("a collection path"),
+                filter: FilterTail::default(),
+            })
+        );
+    }
+
+    #[test]
+    fn browse_without_a_collection_names_what_it_needs() {
+        assert!(matches!(
+            "\\browse ".parse::<MetaCommand>(),
+            Err(FsqError::MissingMetaArgument(MissingMetaArgument {
+                command: "\\browse",
+                ..
+            }))
         ));
     }
 
