@@ -652,12 +652,12 @@ impl Browser {
         Some(Effect::Quit)
     }
 
-    /// Keeps the answer to the query `request`, unless the browser stopped waiting for it. A new
+    /// Keeps the answer to the query `request`, unless the browser stopped waiting for it. A
     /// filter that fails opens in the editor to be fixed, unless the editor is open already with
-    /// what the user is typing. A read with the filter the documents were read with, such as the
-    /// first one or a reload, fails for a reason the filter cannot fix, so the keys stay with
-    /// the panes. Documents read again with the filter they were read with keep the selected
-    /// document and its tree, while it is among them.
+    /// what the user is typing. The first read without a filter, and a read again with the
+    /// filter of the documents on show, such as a reload, fail for a reason the filter cannot
+    /// fix, so the keys stay with the panes. Documents read again with the filter they were read
+    /// with keep the selected document and its tree, while it is among them.
     fn loaded(&mut self, request: RequestId, outcome: FsqResult<Vec<FirestoreDocument>>) {
         let level = &mut self.current;
         if !matches!(&level.load, Load::Pending { request: pending, .. } if *pending == request) {
@@ -695,7 +695,9 @@ impl Browser {
                 }
             }
             Err(error) => {
-                if filter != level.filter {
+                let fixable =
+                    filter != level.filter || (level.documents.is_none() && !filter.is_empty());
+                if fixable {
                     self.filter_editor
                         .get_or_insert_with(|| FilterEditor::from(&filter));
                 }
@@ -846,7 +848,7 @@ impl Browser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browse::fixtures::{browser_of, field_path};
+    use crate::browse::fixtures::{browser_of, field_path, opened};
     use crate::browse::tree::Row;
     use crate::render::fixtures::{draft, dune, string, DOCUMENTS_PATH};
     use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
@@ -1036,6 +1038,29 @@ mod tests {
             browser.level().filter(),
             &FilterTail::from("WHERE pagez > 100")
         );
+    }
+
+    #[test]
+    fn a_first_read_with_a_filter_that_fails_opens_it_in_the_editor_and_one_without_does_not() {
+        let (mut filtered, first) = opened("books", "WHERE pagez > 100");
+        filtered.update(Message::DocumentsLoaded {
+            request: first.request,
+            outcome: Err(FsqError::NoProject),
+        });
+        assert_eq!(edited_text(&filtered), Some("WHERE pagez > 100"));
+        let again = query_of(filtered.update(Message::RunFilter));
+        filtered.update(Message::DocumentsLoaded {
+            request: again.request,
+            outcome: Err(FsqError::NoProject),
+        });
+        assert_eq!(edited_text(&filtered), Some("WHERE pagez > 100"));
+
+        let (mut unfiltered, first) = opened("books", "");
+        unfiltered.update(Message::DocumentsLoaded {
+            request: first.request,
+            outcome: Err(FsqError::NoProject),
+        });
+        assert_eq!(unfiltered.mode(), Mode::Panes);
     }
 
     #[test]
