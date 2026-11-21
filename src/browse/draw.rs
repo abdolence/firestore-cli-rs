@@ -21,7 +21,6 @@ use ratatui::widgets::{
     TableState, Wrap,
 };
 use ratatui::Frame;
-use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 /// The narrowest the documents pane gets, which holds a count such as `58/100+` in its title.
@@ -46,7 +45,7 @@ const BROWSE_SCROLL_PADDING: usize = 2;
 /// which has no bar, and shows without colour.
 const SELECTION_MARKER: &str = "▌";
 
-static PLAIN_THEME: LazyLock<Theme> = LazyLock::new(|| Theme::new(false));
+static PLAIN_THEME: Theme = Theme::new(false);
 
 /// What the browser keeps from one frame to the next: where each list and the popup are
 /// scrolled to, so that the cursor moves inside the visible rows rather than dragging them
