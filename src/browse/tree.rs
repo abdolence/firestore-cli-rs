@@ -419,13 +419,8 @@ impl<'a> Inside<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::browse::fixtures::field_path;
     use crate::render::fixtures::{document, dune, value, vector};
-
-    fn field(names: &[&str]) -> NodePath {
-        names
-            .iter()
-            .fold(NodePath::default(), |path, name| path.field(name))
-    }
 
     /// The path and fold of every field row, in order.
     fn fields(tree: &Tree, document: &FirestoreDocument) -> Vec<(NodePath, Fold)> {
@@ -475,7 +470,7 @@ mod tests {
         let rows = fields(&Tree::default(), &dune);
 
         assert_eq!(rows.len(), dune.fields.len());
-        assert!(rows.contains(&(field(&["address"]), Fold::Collapsed)));
+        assert!(rows.contains(&(field_path(&["address"]), Fold::Collapsed)));
         assert!(rows.iter().all(|(path, _)| path.depth() == 0));
     }
 
@@ -484,19 +479,19 @@ mod tests {
         let dune = dune();
         let mut tree = Tree::default();
 
-        expand_at(&mut tree, &dune, &field(&["address"]));
+        expand_at(&mut tree, &dune, &field_path(&["address"]));
 
         let rows = fields(&tree, &dune);
         let address = rows
             .iter()
-            .position(|(path, _)| *path == field(&["address"]))
+            .position(|(path, _)| *path == field_path(&["address"]))
             .expect("the address row");
         assert_eq!(rows[address].1, Fold::Expanded);
         assert_eq!(
             rows[address + 1..address + 3],
             [
-                (field(&["address", "city"]), Fold::Leaf),
-                (field(&["address", "zip"]), Fold::Leaf),
+                (field_path(&["address", "city"]), Fold::Leaf),
+                (field_path(&["address", "zip"]), Fold::Leaf),
             ]
         );
         assert_eq!(rows[address + 1].0.depth(), 1);
@@ -506,16 +501,16 @@ mod tests {
     fn collapsing_a_map_hides_what_is_open_inside_it_and_reopening_shows_it_again() {
         let shelved = shelved();
         let mut tree = Tree::default();
-        expand_at(&mut tree, &shelved, &field(&["shelf"]));
-        expand_at(&mut tree, &shelved, &field(&["shelf", "top"]));
+        expand_at(&mut tree, &shelved, &field_path(&["shelf"]));
+        expand_at(&mut tree, &shelved, &field_path(&["shelf", "top"]));
         let open = fields(&tree, &shelved);
 
-        point_at(&mut tree, &shelved, &field(&["shelf"]));
+        point_at(&mut tree, &shelved, &field_path(&["shelf"]));
         tree.collapse(&shelved);
         let collapsed = fields(&tree, &shelved);
         tree.expand(&shelved);
 
-        assert_eq!(collapsed, [(field(&["shelf"]), Fold::Collapsed)]);
+        assert_eq!(collapsed, [(field_path(&["shelf"]), Fold::Collapsed)]);
         assert_eq!(open.len(), 3);
         assert_eq!(fields(&tree, &shelved), open);
     }
@@ -524,13 +519,13 @@ mod tests {
     fn collapsing_a_value_without_rows_inside_moves_to_the_row_it_is_in() {
         let shelved = shelved();
         let mut tree = Tree::default();
-        expand_at(&mut tree, &shelved, &field(&["shelf"]));
-        expand_at(&mut tree, &shelved, &field(&["shelf", "top"]));
-        point_at(&mut tree, &shelved, &field(&["shelf", "top", "left"]));
+        expand_at(&mut tree, &shelved, &field_path(&["shelf"]));
+        expand_at(&mut tree, &shelved, &field_path(&["shelf", "top"]));
+        point_at(&mut tree, &shelved, &field_path(&["shelf", "top", "left"]));
 
         assert!(tree.collapse(&shelved));
         assert_eq!(tree.cursor(), 1);
-        point_at(&mut tree, &shelved, &field(&["shelf"]));
+        point_at(&mut tree, &shelved, &field_path(&["shelf"]));
         tree.collapse(&shelved);
         assert!(!tree.collapse(&shelved));
     }
@@ -540,7 +535,7 @@ mod tests {
         let dune = dune();
         let mut tree = Tree::default();
 
-        expand_at(&mut tree, &dune, &field(&["tags"]));
+        expand_at(&mut tree, &dune, &field_path(&["tags"]));
 
         let elements: Vec<_> = fields(&tree, &dune)
             .into_iter()
@@ -565,9 +560,12 @@ mod tests {
         let odd = document("odd", vec![("embedding", vector(&[0.4, 0.2]))]);
         let mut tree = Tree::default();
 
-        expand_at(&mut tree, &odd, &field(&["embedding"]));
+        expand_at(&mut tree, &odd, &field_path(&["embedding"]));
 
-        assert_eq!(fields(&tree, &odd), [(field(&["embedding"]), Fold::Leaf)]);
+        assert_eq!(
+            fields(&tree, &odd),
+            [(field_path(&["embedding"]), Fold::Leaf)]
+        );
     }
 
     #[test]

@@ -4,6 +4,8 @@
 
 mod draw;
 mod editor;
+#[cfg(test)]
+mod fixtures;
 mod matching;
 mod state;
 mod tree;
@@ -33,7 +35,7 @@ use state::{
     BROWSE_DOCUMENT_LIMIT,
 };
 use std::future::Future;
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 use std::time::{Duration, Instant};
@@ -317,9 +319,14 @@ impl Screen {
         Ok(())
     }
 
-    /// Puts `text` on the terminal's clipboard, between two frames.
+    /// Puts `text` on the terminal's clipboard, between two frames, with OSC 52, the escape
+    /// sequence that asks the terminal to set the system clipboard. It reaches the clipboard of
+    /// the machine the terminal runs on, also over SSH, where the terminal allows it.
     fn copy(&mut self, text: &str) -> std::io::Result<()> {
-        write_clipboard(self.terminal.backend_mut(), text)
+        execute!(
+            self.terminal.backend_mut(),
+            CopyToClipboard::to_clipboard_from(text)
+        )
     }
 
     fn restore() {
@@ -347,13 +354,6 @@ impl Drop for Screen {
             Self::restore();
         }
     }
-}
-
-/// Writes OSC 52, the escape sequence that asks the terminal to put `text` on the system
-/// clipboard. It reaches the clipboard of the machine the terminal runs on, also over SSH, where
-/// the terminal allows it.
-fn write_clipboard(out: &mut impl Write, text: &str) -> std::io::Result<()> {
-    execute!(out, CopyToClipboard::to_clipboard_from(text))
 }
 
 /// The Firestore calls the browser waits for. A query replaces the query before it, and a
@@ -462,27 +462,16 @@ impl DocumentsQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::browse::fixtures::{books, browser_of, opened};
     use crate::browse::state::{Load, Pane};
-    use crate::render::fixtures::{document, draft, dune, string, DOCUMENTS_PATH};
+    use crate::render::fixtures::{document, draft, dune};
     use ratatui::backend::TestBackend;
     use std::time::Duration;
 
     /// A browser of `books` that has read `documents`, and the viewport of a frame of it at
     /// 80 by 24, which sizes its pages.
-    fn browser_of(documents: Vec<FirestoreDocument>) -> (Browser, Viewport) {
-        let target = BrowseTarget {
-            collection: "books".parse().expect("a collection path"),
-            filter: FilterTail::default(),
-        };
-        let (mut browser, Effect::Query(query)) =
-            Browser::open(target, DOCUMENTS_PATH, FilterHistory::default())
-        else {
-            panic!("no query")
-        };
-        browser.update(Message::DocumentsLoaded {
-            request: query.request,
-            outcome: Ok(documents),
-        });
+    fn on_screen(documents: Vec<FirestoreDocument>) -> (Browser, Viewport) {
+        let browser = browser_of("books", "", documents);
         let mut viewport = Viewport::default();
         drawn(&browser, &mut viewport);
         (browser, viewport)
@@ -510,12 +499,6 @@ mod tests {
         effect
     }
 
-    fn books(count: usize) -> Vec<FirestoreDocument> {
-        (1..=count)
-            .map(|number| document(&format!("book-{number:03}"), vec![("title", string("t"))]))
-            .collect()
-    }
-
     fn selected(browser: &Browser) -> usize {
         browser.level().selected()
     }
@@ -529,7 +512,7 @@ mod tests {
 
     #[test]
     fn g_and_shift_g_go_to_the_first_and_the_last_row() {
-        let (mut browser, mut viewport) = browser_of(books(30));
+        let (mut browser, mut viewport) = on_screen(books(30));
 
         press(&mut browser, &mut viewport, KeyCode::Char('G'));
         assert_eq!(selected(&browser), 29);
@@ -539,7 +522,7 @@ mod tests {
 
     #[test]
     fn ctrl_d_and_ctrl_u_move_half_a_page() {
-        let (mut browser, mut viewport) = browser_of(books(30));
+        let (mut browser, mut viewport) = on_screen(books(30));
         let half_page = viewport.page_rows() / 2;
         assert!(half_page > 1);
 
@@ -567,7 +550,7 @@ mod tests {
 
     #[test]
     fn space_opens_and_closes_the_map_under_the_cursor() {
-        let (mut browser, mut viewport) = browser_of(vec![dune()]);
+        let (mut browser, mut viewport) = on_screen(vec![dune()]);
         press(&mut browser, &mut viewport, KeyCode::Tab);
         let collapsed = tree_rows(&browser);
 
@@ -581,7 +564,7 @@ mod tests {
 
     #[test]
     fn left_in_the_documents_goes_up_a_level() {
-        let (mut browser, mut viewport) = browser_of(vec![draft(), dune()]);
+        let (mut browser, mut viewport) = on_screen(vec![draft(), dune()]);
         press(&mut browser, &mut viewport, KeyCode::Down);
         press(&mut browser, &mut viewport, KeyCode::Right);
         press(&mut browser, &mut viewport, KeyCode::Char('G'));
@@ -609,7 +592,7 @@ mod tests {
 
     #[test]
     fn r_reads_the_documents_again_with_their_filter_and_keeps_the_selected_one() {
-        let (mut browser, mut viewport) = browser_of(vec![draft(), dune()]);
+        let (mut browser, mut viewport) = on_screen(vec![draft(), dune()]);
         press(&mut browser, &mut viewport, KeyCode::Down);
         press(&mut browser, &mut viewport, KeyCode::Right);
         press(&mut browser, &mut viewport, KeyCode::Right);
@@ -631,7 +614,7 @@ mod tests {
 
     #[test]
     fn the_keys_of_the_panes_type_into_the_filter_editor() {
-        let (mut browser, mut viewport) = browser_of(vec![draft(), dune()]);
+        let (mut browser, mut viewport) = on_screen(vec![draft(), dune()]);
         press(&mut browser, &mut viewport, KeyCode::Char('/'));
 
         for typed in ['g', 'G', ' ', 'r', '?', 'q', 'j', 'l', 'y', 'Y', 'f'] {
@@ -651,7 +634,7 @@ mod tests {
 
     #[test]
     fn a_letter_with_ctrl_is_not_the_letter_in_the_panes_and_the_popup() {
-        let (mut browser, mut viewport) = browser_of(vec![dune()]);
+        let (mut browser, mut viewport) = on_screen(vec![dune()]);
         press(&mut browser, &mut viewport, KeyCode::Tab);
 
         for letter in ['q', 'r', 'y', 'f', 'l', '/'] {
@@ -682,24 +665,17 @@ mod tests {
         );
     }
 
-    /// What `effect` writes to the terminal to put its text on the clipboard.
-    fn written_to_clipboard(effect: Option<Effect>) -> Vec<u8> {
+    /// The text `effect` puts on the clipboard.
+    fn copied_text(effect: Option<Effect>) -> String {
         let Some(Effect::Copy { text, .. }) = effect else {
             panic!("no copy: {effect:?}")
         };
-        let mut written = Vec::new();
-        write_clipboard(&mut written, &text).expect("a write to memory");
-        written
-    }
-
-    /// The OSC 52 sequence that puts the text encoded as `base64` on the clipboard.
-    fn osc_52(base64: &str) -> Vec<u8> {
-        format!("\x1b]52;c;{base64}\x1b\\").into_bytes()
+        text
     }
 
     #[test]
-    fn y_copies_a_map_as_tagged_json_and_a_string_as_its_text_over_osc_52() {
-        let (mut browser, mut viewport) = browser_of(vec![dune()]);
+    fn y_copies_a_map_as_tagged_json_and_a_string_as_its_text() {
+        let (mut browser, mut viewport) = on_screen(vec![dune()]);
         assert_eq!(press(&mut browser, &mut viewport, KeyCode::Char('y')), None);
         press(&mut browser, &mut viewport, KeyCode::Tab);
 
@@ -708,17 +684,13 @@ mod tests {
         press(&mut browser, &mut viewport, KeyCode::Down);
         let city = press(&mut browser, &mut viewport, KeyCode::Char('y'));
 
-        // {"city":"London","zip":"N1 9GU"} and London
-        assert_eq!(
-            written_to_clipboard(address),
-            osc_52("eyJjaXR5IjoiTG9uZG9uIiwiemlwIjoiTjEgOUdVIn0=")
-        );
-        assert_eq!(written_to_clipboard(city), osc_52("TG9uZG9u"));
+        assert_eq!(copied_text(address), r#"{"city":"London","zip":"N1 9GU"}"#);
+        assert_eq!(copied_text(city), "London");
     }
 
     #[test]
     fn shift_y_copies_the_path_the_tree_border_shows_and_the_popup_copies_too() {
-        let (mut browser, mut viewport) = browser_of(vec![dune()]);
+        let (mut browser, mut viewport) = on_screen(vec![dune()]);
         press(&mut browser, &mut viewport, KeyCode::Tab);
         press(&mut browser, &mut viewport, KeyCode::Right);
         press(&mut browser, &mut viewport, KeyCode::Down);
@@ -731,20 +703,17 @@ mod tests {
         let popup_path = press(&mut browser, &mut viewport, KeyCode::Char('Y'));
         let popup_value = press(&mut browser, &mut viewport, KeyCode::Char('y'));
 
-        // address.city, blurb, and the blurb with its line break
-        assert_eq!(written_to_clipboard(city), osc_52("YWRkcmVzcy5jaXR5"));
-        assert_eq!(written_to_clipboard(popup_path), osc_52("Ymx1cmI="));
+        assert_eq!(copied_text(city), "address.city");
+        assert_eq!(copied_text(popup_path), "blurb");
         assert_eq!(
-            written_to_clipboard(popup_value),
-            osc_52(
-                "QSBkZXNlcnQgcGxhbmV0LCBhIHNwaWNlIHRoYXQgZXh0ZW5kcyBsaWZlLAphbmQgYSBkdWtlJ3Mgc29u"
-            )
+            copied_text(popup_value),
+            "A desert planet, a spice that extends life,\nand a duke's son"
         );
     }
 
     #[test]
     fn f_opens_the_editor_with_a_where_on_a_leaf_and_does_nothing_on_a_map() {
-        let (mut browser, mut viewport) = browser_of(vec![dune()]);
+        let (mut browser, mut viewport) = on_screen(vec![dune()]);
         press(&mut browser, &mut viewport, KeyCode::Tab);
 
         press(&mut browser, &mut viewport, KeyCode::Char('f'));
@@ -766,15 +735,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_call_that_panics_fails_its_load() {
-        let target = BrowseTarget {
-            collection: "books".parse().expect("a collection path"),
-            filter: FilterTail::default(),
-        };
-        let (mut browser, Effect::Query(query)) =
-            Browser::open(target, DOCUMENTS_PATH, FilterHistory::default())
-        else {
-            panic!("no query")
-        };
+        let (mut browser, query) = opened("books", "");
         let mut calls = Calls {
             query: Some(Call::spawn(query.request, panicking_query())),
             listing: None,

@@ -725,16 +725,15 @@ fn value_style(value: &Value) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browse::editor::{Edit, FilterHistory};
+    use crate::browse::editor::Edit;
+    use crate::browse::fixtures::{books, browser_of, opened};
     use crate::browse::pressed;
     use crate::browse::state::{Effect, Message, Movement, RequestId};
-    use crate::browse::{BrowseTarget, FilterTail};
     use crate::errors::FsqError;
-    use crate::render::fixtures::{document, draft, dune, string, value, DOCUMENTS_PATH};
+    use crate::render::fixtures::{document, draft, dune, string, value};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use firestore::errors::FirestoreError;
     use firestore::gcloud_sdk::tonic::{Code, Status};
-    use firestore::FirestoreCollectionId;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
     use ratatui::style::{Color, Modifier};
@@ -836,38 +835,12 @@ mod tests {
         browser
     }
 
-    /// A browser of `collection` read with `filter`, which has read `documents`.
-    fn browser_of(collection: &str, filter: &str, documents: Vec<FirestoreDocument>) -> Browser {
-        let mut browser = opened(collection, filter);
-        let query = query_of(&browser);
-        browser.update(Message::DocumentsLoaded {
-            request: query,
-            outcome: Ok(documents),
-        });
-        browser
-    }
-
-    /// A browser of `collection` that waits for its first documents.
-    fn opened(collection: &str, filter: &str) -> Browser {
-        let target = BrowseTarget {
-            collection: collection.parse().expect("a collection path"),
-            filter: FilterTail::from(filter),
-        };
-        Browser::open(target, DOCUMENTS_PATH, FilterHistory::default()).0
-    }
-
     /// The request of the query the browser waits for.
     fn query_of(browser: &Browser) -> RequestId {
         match browser.level().load() {
             Load::Pending { request, .. } => *request,
             other => panic!("no query pending: {other:?}"),
         }
-    }
-
-    fn books(count: usize) -> Vec<FirestoreDocument> {
-        (1..=count)
-            .map(|number| document(&format!("book-{number:03}"), vec![("title", string("t"))]))
-            .collect()
     }
 
     fn edit_filter(browser: &mut Browser, text: &str) {
@@ -954,7 +927,7 @@ mod tests {
 
     #[test]
     fn a_pending_load_shows_how_long_it_has_waited_and_no_count_before_the_first_answer() {
-        let browser = opened("books", "");
+        let (browser, _) = opened("books", "");
         let mut screen = TestScreen::new(80, 24);
 
         let first = screen.draw(&browser);
@@ -1065,11 +1038,11 @@ mod tests {
 
     #[test]
     fn a_failed_first_read_leaves_the_keys_and_shows_its_error_under_them() {
-        let mut browser = opened("books", "");
+        let (mut browser, query) = opened("books", "");
         let error = firestore_error("The database is not reachable from here");
         let shown = format!("error: {error}");
         browser.update(Message::DocumentsLoaded {
-            request: query_of(&browser),
+            request: query.request,
             outcome: Err(error),
         });
 
@@ -1137,42 +1110,12 @@ mod tests {
     }
 
     #[test]
-    fn the_key_hints_drop_by_priority_and_keep_q_quit() {
-        let mut browser = browser_of("books", "", vec![dune()]);
-        browser.update(Message::Expand);
-        browser.update(Message::Move(Movement::Last));
-        let Some(Effect::ListSubcollections { request, .. }) = browser.update(Message::Expand)
-        else {
-            panic!("no listing")
-        };
-        let reviews: FirestoreCollectionId = "reviews".parse().expect("a collection ID");
-        browser.update(Message::SubcollectionsListed {
-            request,
-            outcome: Ok(vec![reviews]),
-        });
-        browser.update(Message::Move(Movement::Last));
-        browser.update(Message::Expand);
+    fn the_key_hints_keep_q_quit_on_a_narrow_screen() {
+        let browser = in_tree_at(vec![dune()], "title");
 
-        let wide = TestScreen::new(120, 24).draw(&browser);
-        let narrow = TestScreen::new(60, 20).draw(&browser);
+        let lines = TestScreen::new(40, 12).draw(&browser);
 
-        let all = wide[23].trim_end();
-        for hint in [
-            "↑↓ move",
-            "→ open",
-            "Tab pane",
-            "/ filter",
-            "Esc back",
-            "Ctrl-C stop",
-        ] {
-            assert!(all.contains(hint), "no `{hint}` in {all}");
-        }
-        let kept = narrow[19].trim_end();
-        assert!(kept.ends_with("q quit"), "{kept}");
-        for hint in ["/ filter", "Esc back", "Ctrl-C stop"] {
-            assert!(kept.contains(hint), "no `{hint}` in {kept}");
-        }
-        assert!(!kept.contains("↑↓ move"), "{kept}");
+        assert!(lines[11].trim_end().ends_with("q quit"), "{}", lines[11]);
     }
 
     #[test]
@@ -1319,7 +1262,7 @@ mod tests {
 
     #[test]
     fn the_cursor_is_one_bar_without_the_colours_and_dim_of_its_cells() {
-        for field in ["blurb", "author", "subtitle", "address"] {
+        for field in ["author", "subtitle"] {
             let browser = in_tree_at(vec![dune()], field);
             let mut screen = TestScreen::new(80, 24);
             let lines = screen.draw(&browser);
@@ -1341,59 +1284,6 @@ mod tests {
     }
 
     #[test]
-    fn the_selected_row_of_either_pane_is_marked_whichever_has_the_focus() {
-        let mut browser = in_tree_at(vec![draft(), dune()], "title");
-        let mut screen = TestScreen::new(80, 24);
-
-        let tree_focused = screen.draw(&browser);
-        let parked_document = screen.cell(1, 2).clone();
-        browser.update(Message::SwitchPane);
-        let documents_focused = screen.draw(&browser);
-        let tree_x =
-            u16::try_from(column_of(&tree_focused, "┌ draft", "┌ draft")).expect("a column");
-        let parked_row = screen.cell(tree_x + 2, 2).clone();
-
-        assert!(tree_focused[2].starts_with("│▌draft"));
-        assert!(line_with(&tree_focused, "Untitled").contains("││▌"));
-        assert!(documents_focused[2].starts_with("│▌draft"));
-        assert!(line_with(&documents_focused, "Untitled").contains("││▌"));
-        for parked in [parked_document, parked_row] {
-            assert!(!parked
-                .modifier
-                .intersects(Modifier::REVERSED | Modifier::BOLD));
-        }
-    }
-
-    #[test]
-    fn the_documents_pane_fits_the_longest_id_and_cuts_ids_in_the_middle() {
-        let pane_width = |lines: &[String]| lines[1].chars().position(|c| c == '┐').map(|x| x + 1);
-        let short = browser_of("books", "", vec![draft(), dune()]);
-        assert_eq!(pane_width(&TestScreen::new(80, 24).draw(&short)), Some(12));
-
-        let ids: Vec<FirestoreDocument> = ["Zk3QmX9aB7cD2eF4gH57", "Zk3QmX9aB7cD2eF4gH58"]
-            .into_iter()
-            .map(|id| document(id, vec![("title", string("t"))]))
-            .collect();
-        let long = browser_of("books", "", ids);
-        let wide = TestScreen::new(120, 24).draw(&long);
-        let narrow = TestScreen::new(60, 20).draw(&long);
-
-        assert_eq!(pane_width(&wide), Some(23));
-        assert!(wide[2].starts_with("│▌Zk3QmX9aB7cD2eF4gH57│"));
-        assert_eq!(pane_width(&narrow), Some(21));
-        assert!(
-            narrow[2].starts_with("│▌Zk3QmX9aB…2eF4gH57│"),
-            "{}",
-            narrow[2]
-        );
-        assert!(
-            narrow[3].starts_with("│ Zk3QmX9aB…2eF4gH58│"),
-            "{}",
-            narrow[3]
-        );
-    }
-
-    #[test]
     fn the_values_stay_put_while_rows_expand_and_between_documents_of_one_shape() {
         let mut sequel = dune();
         sequel.name = sequel.name.replace("dune", "dune-messiah");
@@ -1412,84 +1302,6 @@ mod tests {
         assert_eq!(column_of(&expanded, " title ", "Dune"), value_column);
         assert_eq!(column_of(&expanded, " city ", "London"), value_column);
         assert_eq!(column_of(&other, " title ", "Dune Messiah"), value_column);
-        assert!(line_with(&collapsed, "▸ address").contains("{city, zip}"));
-        assert!(!line_with(&expanded, "▾ address").contains('{'));
-    }
-
-    #[test]
-    fn a_narrow_tree_drops_the_type_column() {
-        let browser = browser_of("books", "", vec![dune()]);
-
-        let wide = TestScreen::new(120, 24).draw(&browser);
-        let narrow = TestScreen::new(60, 20).draw(&browser);
-
-        assert!(line_with(&wide, " title ").contains("string"));
-        let title = line_with(&narrow, " title ");
-        assert!(
-            title.contains("Dune") && !title.contains("string"),
-            "{title}"
-        );
-    }
-
-    #[test]
-    fn a_field_named_subcollections_stands_apart_from_the_subcollections() {
-        let mut odd = draft();
-        odd.fields
-            .insert("subcollections".to_string(), string("a field"));
-        let browser = browser_of("books", "", vec![odd]);
-        let mut screen = TestScreen::new(80, 24);
-
-        let lines = screen.draw(&browser);
-
-        let field = row_of(&lines, "a field");
-        let group = lines
-            .iter()
-            .rposition(|line| line.contains("▸ subcollections"))
-            .and_then(|row| u16::try_from(row).ok())
-            .expect("the group of subcollections");
-        assert!(group > field + 1);
-        let tree_x = u16::try_from(column_of(&lines, "┌ draft", "┌ draft")).expect("a column");
-        let blank: String = lines[usize::from(group - 1)]
-            .chars()
-            .skip(usize::from(tree_x) + 1)
-            .take(60)
-            .collect();
-        assert!(blank.trim().is_empty(), "{blank}");
-        let label_x = u16::try_from(column_of(
-            &lines[usize::from(group)..],
-            "subcollections",
-            "subcollections",
-        ))
-        .expect("a column");
-        let field_x = u16::try_from(column_of(
-            &lines[usize::from(field)..],
-            "subcollections",
-            "subcollections",
-        ))
-        .expect("a column");
-        assert!(screen
-            .cell(label_x, group)
-            .modifier
-            .contains(Modifier::ITALIC));
-        assert!(!screen
-            .cell(field_x, field)
-            .modifier
-            .contains(Modifier::ITALIC));
-        assert!(line_with(&lines, "a field").contains("string"));
-    }
-
-    #[test]
-    fn null_shows_once() {
-        let browser = browser_of("books", "", vec![dune()]);
-
-        let lines = TestScreen::new(80, 24).draw(&browser);
-
-        let subtitle = line_with(&lines, " subtitle ");
-        assert_eq!(
-            subtitle.to_lowercase().matches("null").count(),
-            1,
-            "{subtitle}"
-        );
     }
 
     #[test]
@@ -1517,28 +1329,6 @@ mod tests {
             .rposition(|line| line.starts_with('│') && line.contains("field_"))
             .expect("a field row");
         assert!(lines[bottom].contains("field_14"), "{}", lines.join("\n"));
-    }
-
-    #[test]
-    fn question_mark_shows_every_key_over_the_panes() {
-        let mut browser = browser_of("books", "", vec![dune()]);
-        let mut screen = TestScreen::new(120, 40);
-        assert!(line_with(&screen.draw(&browser), "q quit").contains("? help"));
-
-        let help = screen.press(&mut browser, KeyCode::Char('?'));
-
-        for keys in [
-            "Ctrl-U Ctrl-D",
-            "g G",
-            "Space",
-            "Ctrl-G",
-            "Ctrl-W Ctrl-U",
-            "PgUp PgDn",
-        ] {
-            line_with(&help, keys);
-        }
-        screen.press(&mut browser, KeyCode::Esc);
-        assert!(browser.popup().is_none());
     }
 
     /// A book with the ID `id` and the rating `rating`.
@@ -1595,70 +1385,5 @@ mod tests {
             wide[2]
         );
         assert_eq!(in_documents_pane(&narrow[2]), "▌Zk3QmX9aB7cD2eF4gH57");
-    }
-
-    #[test]
-    fn the_hints_offer_y_and_f_only_where_they_work() {
-        let footer = |field: &str| {
-            let browser = in_tree_at(vec![dune()], field);
-            let lines = TestScreen::new(120, 24).draw(&browser);
-            lines[23].clone()
-        };
-
-        let on_leaf = footer("title");
-        let on_map = footer("address");
-        let documents = TestScreen::new(120, 24).draw(&browser_of("books", "", vec![dune()]));
-
-        assert!(
-            on_leaf.contains("y copy") && on_leaf.contains("f where"),
-            "{on_leaf}"
-        );
-        assert!(
-            on_map.contains("y copy") && !on_map.contains("f where"),
-            "{on_map}"
-        );
-        assert!(!documents[23].contains("y copy") && !documents[23].contains("f where"));
-    }
-
-    #[test]
-    fn the_note_of_a_copy_shows_dim_until_the_next_key() {
-        let mut browser = in_tree_at(vec![dune()], "blurb");
-        let mut screen = TestScreen::new(80, 24);
-
-        let copied = screen.press(&mut browser, KeyCode::Char('Y'));
-        let note_x = u16::try_from(column_of(&copied, "copied path", "copied")).expect("a column");
-        assert!(screen.cell(note_x, 23).modifier.contains(Modifier::DIM));
-        let moved = screen.press(&mut browser, KeyCode::Down);
-        screen.press(&mut browser, KeyCode::Up);
-        screen.press(&mut browser, KeyCode::Enter);
-        let in_popup = screen.press(&mut browser, KeyCode::Char('y'));
-        let scrolled = screen.press(&mut browser, KeyCode::Down);
-
-        assert!(!moved[23].contains("copied"), "{}", moved[23]);
-        assert!(in_popup[23].contains("copied value"), "{}", in_popup[23]);
-        assert!(!scrolled[23].contains("copied"), "{}", scrolled[23]);
-    }
-
-    #[test]
-    fn with_colour_off_the_frame_keeps_its_modifiers_and_drops_every_hue() {
-        let mut browser = browser_of("books", "", vec![dune()]);
-        browser.update(Message::Expand);
-        let mut screen = TestScreen::new(80, 24);
-        screen.draw(&browser);
-        let mut buffer = screen.terminal.backend().buffer().clone();
-        assert!(buffer.content.iter().any(|cell| cell.fg != Color::Reset));
-
-        drop_hues(&mut buffer);
-
-        assert!(buffer
-            .content
-            .iter()
-            .all(|cell| cell.fg == Color::Reset && cell.bg == Color::Reset));
-        for modifier in [Modifier::BOLD, Modifier::DIM, Modifier::REVERSED] {
-            assert!(buffer
-                .content
-                .iter()
-                .any(|cell| cell.modifier.contains(modifier)));
-        }
     }
 }

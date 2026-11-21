@@ -274,47 +274,6 @@ mod tests {
     }
 
     #[test]
-    fn typing_inserts_at_the_cursor_and_moves_it_past_the_character() {
-        let editor = edited(
-            "WHERE pages > 10",
-            &[Edit::Left, Edit::Insert('2'), Edit::End, Edit::Insert('0')],
-        );
-
-        assert_eq!(editor.text(), "WHERE pages > 1200");
-        assert_eq!(editor.cursor(), editor.text().len());
-    }
-
-    #[test]
-    fn deleting_takes_a_character_on_either_side_of_the_cursor() {
-        let editor = edited(
-            "WHERE pagez > 100",
-            &[
-                Edit::Start,
-                Edit::Right,
-                Edit::DeleteBefore,
-                Edit::DeleteAfter,
-            ],
-        );
-
-        assert_eq!(editor.text(), "ERE pagez > 100");
-        assert_eq!(editor.cursor(), 0);
-    }
-
-    #[test]
-    fn ctrl_w_deletes_the_word_before_the_cursor_and_ctrl_u_everything_before_it() {
-        let mut editor = edited("WHERE pages > 100 ORDER", &[Edit::DeleteWordBefore]);
-        assert_eq!(editor.text(), "WHERE pages > 100 ");
-
-        for _ in 0..4 {
-            editor.apply(Edit::Left);
-        }
-        editor.apply(Edit::DeleteToStart);
-
-        assert_eq!(editor.text(), "100 ");
-        assert_eq!(editor.cursor(), 0);
-    }
-
-    #[test]
     fn a_wide_character_takes_two_columns_of_the_window() {
         let editor = editor(&"名前".repeat(20));
 

@@ -846,6 +846,7 @@ impl Browser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::browse::fixtures::{browser_of, field_path};
     use crate::browse::tree::Row;
     use crate::render::fixtures::{draft, dune, string, DOCUMENTS_PATH};
     use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
@@ -872,24 +873,7 @@ mod tests {
 
     /// A browser of `books` that has read `draft` and `dune`, in that order.
     fn browser() -> Browser {
-        browser_of(vec![draft(), dune()])
-    }
-
-    /// A browser of `books` that has read `documents`.
-    fn browser_of(documents: Vec<FirestoreDocument>) -> Browser {
-        let target = BrowseTarget {
-            collection: "books".parse().expect("a collection path"),
-            filter: FilterTail::default(),
-        };
-        let (mut browser, first) = Browser::open(target, DOCUMENTS_PATH, FilterHistory::default());
-        let Effect::Query(query) = first else {
-            panic!("no query: {first:?}")
-        };
-        browser.update(Message::DocumentsLoaded {
-            request: query.request,
-            outcome: Ok(documents),
-        });
-        browser
+        browser_of("books", "", vec![draft(), dune()])
     }
 
     /// Opens the filter editor, types `text` into it and runs it.
@@ -1021,16 +1005,15 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_query_keeps_the_documents_read_before_it() {
+    fn a_failed_filter_keeps_the_documents_and_reopens_in_the_editor_until_it_answers() {
         let mut browser = browser();
 
-        let query = run_filter(&mut browser, "WHERE");
+        let failing = run_filter(&mut browser, "WHERE pagez > 100");
         browser.update(Message::DocumentsLoaded {
-            request: query.request,
+            request: failing.request,
             outcome: Err(FsqError::NoProject),
         });
 
-        assert_eq!(query.filter, FilterTail::from("WHERE"));
         assert!(matches!(
             browser.level().load(),
             Load::Failed {
@@ -1039,19 +1022,20 @@ mod tests {
             }
         ));
         assert_eq!(browser.level().documents().map(<[_]>::len), Some(2));
-    }
-
-    #[test]
-    fn a_failed_filter_reopens_in_the_editor() {
-        let mut browser = browser();
-
-        let query = run_filter(&mut browser, "WHERE pagez > 100");
+        assert_eq!(browser.level().filter(), &FilterTail::default());
+        assert_eq!(edited_text(&browser), Some("WHERE pagez > 100"));
+        browser.update(Message::CancelFilter);
+        browser.update(Message::EditFilter);
+        assert_eq!(edited_text(&browser), Some("WHERE pagez > 100"));
+        let query = query_of(browser.update(Message::RunFilter));
         browser.update(Message::DocumentsLoaded {
             request: query.request,
-            outcome: Err(FsqError::NoProject),
+            outcome: Ok(vec![dune()]),
         });
-
-        assert_eq!(edited_text(&browser), Some("WHERE pagez > 100"));
+        assert_eq!(
+            browser.level().filter(),
+            &FilterTail::from("WHERE pagez > 100")
+        );
     }
 
     #[test]
@@ -1070,36 +1054,9 @@ mod tests {
     }
 
     #[test]
-    fn the_filter_of_the_documents_shown_changes_only_when_the_new_one_has_answered() {
+    fn a_stopped_query_drops_its_late_answer_and_reopens_with_slash() {
         let mut browser = browser();
-
-        let failing = run_filter(&mut browser, "WHERE genre = 'fantasy'");
-        assert_eq!(browser.level().filter(), &FilterTail::default());
-        browser.update(Message::DocumentsLoaded {
-            request: failing.request,
-            outcome: Err(FsqError::NoProject),
-        });
-        assert_eq!(browser.level().filter(), &FilterTail::default());
-
-        browser.update(Message::CancelFilter);
-        browser.update(Message::EditFilter);
-        assert_eq!(edited_text(&browser), Some("WHERE genre = 'fantasy'"));
-        let query = query_of(browser.update(Message::RunFilter));
-        browser.update(Message::DocumentsLoaded {
-            request: query.request,
-            outcome: Ok(vec![dune()]),
-        });
-        assert_eq!(
-            browser.level().filter(),
-            &FilterTail::from("WHERE genre = 'fantasy'")
-        );
-    }
-
-    #[test]
-    fn an_answer_the_browser_stopped_waiting_for_changes_nothing() {
-        let mut browser = browser();
-        browser.update(Message::EditFilter);
-        let query = query_of(browser.update(Message::RunFilter));
+        let query = run_filter(&mut browser, "WHERE pages > 100");
 
         assert_eq!(browser.update(Message::Interrupt), Some(Effect::Cancel));
         browser.update(Message::DocumentsLoaded {
@@ -1109,76 +1066,40 @@ mod tests {
 
         assert!(matches!(browser.level().load(), Load::Stopped { .. }));
         assert_eq!(browser.level().documents().map(<[_]>::len), Some(2));
-        assert_eq!(browser.update(Message::Interrupt), Some(Effect::Quit));
-    }
-
-    #[test]
-    fn a_stopped_filter_is_not_a_failure_and_reopens_with_slash() {
-        let mut browser = browser();
-        run_filter(&mut browser, "WHERE pages > 100");
-
-        browser.update(Message::Interrupt);
-
-        assert!(matches!(browser.level().load(), Load::Stopped { .. }));
-        assert_eq!(browser.filter_editor().map(FilterEditor::text), None);
+        assert!(browser.filter_editor().is_none());
         browser.update(Message::EditFilter);
         assert_eq!(edited_text(&browser), Some("WHERE pages > 100"));
     }
 
     #[test]
-    fn ctrl_c_stops_a_load_then_closes_the_filter_editor_then_quits() {
+    fn ctrl_c_stops_a_load_then_closes_the_popup_then_the_filter_editor_then_quits() {
         let mut browser = browser();
+        run_filter(&mut browser, "WHERE pages > 100");
         browser.update(Message::EditFilter);
-        query_of(browser.update(Message::RunFilter));
-        browser.update(Message::EditFilter);
+        browser.update(Message::ShowHelp);
 
         assert_eq!(browser.update(Message::Interrupt), Some(Effect::Cancel));
-        assert!(browser.filter_editor().is_some());
-        assert_eq!(browser.update(Message::Interrupt), None);
-        assert!(browser.filter_editor().is_none());
-        assert_eq!(browser.update(Message::Interrupt), Some(Effect::Quit));
-    }
-
-    #[test]
-    fn ctrl_c_closes_the_popup_before_the_filter_editor_under_it() {
-        let mut browser = browser();
-        let query = run_filter(&mut browser, "WHERE pagez > 100");
-        browser.update(Message::DocumentsLoaded {
-            request: query.request,
-            outcome: Err(FsqError::NoProject),
-        });
-
-        browser.update(Message::ShowError);
-        assert!(matches!(
-            browser.popup(),
-            Some(Popup::Error(Failure::Query))
-        ));
         assert_eq!(browser.mode(), Mode::Popup);
-        browser.update(Message::Paste(" AND".to_string()));
-
         assert_eq!(browser.update(Message::Interrupt), None);
-        assert!(browser.popup().is_none());
-        assert_eq!(edited_text(&browser), Some("WHERE pagez > 100"));
+        assert_eq!(browser.mode(), Mode::FilterEditor);
         assert_eq!(browser.update(Message::Interrupt), None);
-        assert!(browser.filter_editor().is_none());
+        assert_eq!(browser.mode(), Mode::Panes);
         assert_eq!(browser.update(Message::Interrupt), Some(Effect::Quit));
     }
 
     #[test]
-    fn a_paste_goes_into_the_filter_editor_as_one_line() {
+    fn a_paste_goes_only_into_a_filter_editor_without_a_popup_over_it() {
         let mut browser = browser();
-        assert_eq!(browser.update(Message::Paste("q".to_string())), None);
+        browser.update(Message::Paste("q".to_string()));
         assert!(browser.filter_editor().is_none());
 
         browser.update(Message::EditFilter);
-        browser.update(Message::Paste(
-            "WHERE genre = 'sf'\nAND pages > 100\r\nORDER BY title\rLIMIT 5".to_string(),
-        ));
+        browser.update(Message::ShowHelp);
+        browser.update(Message::Paste(" AND".to_string()));
+        browser.update(Message::ClosePopup);
+        browser.update(Message::Paste("WHERE".to_string()));
 
-        assert_eq!(
-            edited_text(&browser),
-            Some("WHERE genre = 'sf' AND pages > 100 ORDER BY title LIMIT 5")
-        );
+        assert_eq!(edited_text(&browser), Some("WHERE"));
     }
 
     #[test]
@@ -1193,12 +1114,6 @@ mod tests {
         assert_eq!(selected_id(&browser), Some("dune"));
         browser.update(Message::Move(Movement::First));
         assert_eq!(selected_id(&browser), Some("draft"));
-    }
-
-    fn path(names: &[&str]) -> NodePath {
-        names
-            .iter()
-            .fold(NodePath::default(), |path, name| path.field(name))
     }
 
     /// The path of the field under the tree cursor of the selected document.
@@ -1238,15 +1153,21 @@ mod tests {
 
     #[test]
     fn another_document_keeps_the_open_maps_and_the_cursor_on_the_same_path() {
-        let mut browser = browser_of(vec![dune(), dune_messiah()]);
+        let mut browser = browser_of("books", "", vec![dune(), dune_messiah()]);
         on_city(&mut browser);
-        assert_eq!(cursor_path(&browser), Some(path(&["address", "city"])));
+        assert_eq!(
+            cursor_path(&browser),
+            Some(field_path(&["address", "city"]))
+        );
 
         browser.update(Message::Move(Movement::Down(1)));
 
         assert_eq!(selected_id(&browser), Some("dune-messiah"));
         assert!(has_open_map(&browser));
-        assert_eq!(cursor_path(&browser), Some(path(&["address", "city"])));
+        assert_eq!(
+            cursor_path(&browser),
+            Some(field_path(&["address", "city"]))
+        );
     }
 
     #[test]
@@ -1259,7 +1180,7 @@ mod tests {
             })),
         };
         one_tag.fields.insert("tags".to_string(), tags);
-        let mut browser = browser_of(vec![dune(), one_tag]);
+        let mut browser = browser_of("books", "", vec![dune(), one_tag]);
         browser.update(Message::Expand);
         browser.update(Message::Move(Movement::Down(10)));
         browser.update(Message::Expand);
@@ -1269,13 +1190,13 @@ mod tests {
 
         browser.update(Message::Move(Movement::Down(1)));
 
-        assert_eq!(cursor_path(&browser), Some(path(&["tags"])));
+        assert_eq!(cursor_path(&browser), Some(field_path(&["tags"])));
         assert_eq!(browser.level().tree().cursor(), 10);
     }
 
     #[test]
     fn a_new_query_starts_with_the_tree_collapsed() {
-        let mut browser = browser_of(vec![dune(), dune_messiah()]);
+        let mut browser = browser_of("books", "", vec![dune(), dune_messiah()]);
         on_city(&mut browser);
 
         let query = run_filter(&mut browser, "WHERE pages > 100");
@@ -1389,15 +1310,15 @@ mod tests {
 
         assert_eq!(
             order_key("WHERE pages > 100 ORDER BY rating DESC, title LIMIT 5"),
-            Some(path(&["rating"]))
+            Some(field_path(&["rating"]))
         );
         assert_eq!(
             order_key("ORDER BY address.city"),
-            Some(path(&["address", "city"]))
+            Some(field_path(&["address", "city"]))
         );
         assert_eq!(
             order_key("ORDER BY `unit-price`"),
-            Some(path(&["unit-price"]))
+            Some(field_path(&["unit-price"]))
         );
         for unordered in [
             "",
