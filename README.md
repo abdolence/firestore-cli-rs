@@ -409,7 +409,7 @@ The main keys are below, and `?` in the browser lists them all:
 |---|---|
 | ↑ and ↓, `k` and `j` | moves the cursor |
 | →, `l` | opens the map, array or subcollection under the cursor; in the documents, moves to the tree |
-| Enter | shows the value under the cursor whole in a popup, a box over the panes that Esc closes |
+| Enter | on a leaf or an open map or array, shows the value whole in a popup, a box over the panes that Esc closes; on a closed map, array or subcollection, opens it, and in the documents, moves to the tree |
 | ←, `h` | closes the map or array under the cursor, or moves up a level |
 | Tab | switches between the documents and the tree |
 | `/` | edits the filter; ↑ and ↓ recall the filters that ran, Enter runs it and Esc closes the editor |
@@ -425,10 +425,10 @@ The main keys are below, and `?` in the browser lists them all:
 * in the REPL the rest of the line after the collection is the filter, kept as typed, so a string in it needs no extra
   quoting, and `--filter` is not a flag there. `fsq browse` takes it with `--filter`. A `;` at the end of the filter is
   dropped;
-* a new filter that fails reopens in the editor with its error under it, and the documents read before it stay. A read
-  that fails otherwise, such as the first read of a collection, `r` or a subcollection opened, leaves the editor
-  closed, and its error shows under the keys at the bottom. Ctrl-G shows any error whole, and `/` opens the filter that
-  failed again;
+* a filter that fails opens in the editor with its error under it, and the documents read before it stay. The first
+  read without a filter, such as a subcollection opened, and `r` over documents already read leave the editor closed
+  when they fail, and the error shows under the keys at the bottom. Ctrl-G shows any error whole, and `/` opens the
+  filter that failed again;
 * the last row of the tree is `subcollections`. Opening it lists the collections under the document, and opening one
   of them browses it without a filter. Esc returns to the document as it was left;
 * `y` copies a string as its text, and any other value as one line of JSON in the tagged encoding `fsq export` writes,
