@@ -878,7 +878,8 @@ mod tests {
         assert!(titles.starts_with("┌ 2/2 ─"));
         assert!(!titles.contains("books/dune"));
         assert!(line_with(&lines, "▾ address").contains("draft"));
-        assert!(line_with(&lines, "London").contains("city"));
+        let city = line_with(&lines, "London");
+        assert!(city.contains("city") && city.contains("string"), "{city}");
         assert!(line_with(&lines, "▸ tags").contains("[2 items]"));
         line_with(&lines, "▸ subcollections");
     }
@@ -1161,6 +1162,35 @@ mod tests {
     }
 
     #[test]
+    fn question_mark_lists_the_keys_of_the_panes_and_of_the_editor() {
+        let mut browser = browser_of("books", "", vec![dune()]);
+        let mut screen = TestScreen::new(120, 40);
+
+        let help = screen.press(&mut browser, KeyCode::Char('?'));
+
+        line_with(&help, "Ctrl-U Ctrl-D");
+        line_with(&help, "Ctrl-W Ctrl-U");
+    }
+
+    #[test]
+    fn the_note_of_a_copy_shows_until_the_next_key() {
+        let mut browser = in_tree_at(vec![dune()], "blurb");
+        let mut screen = TestScreen::new(80, 24);
+
+        let copied = screen.press(&mut browser, KeyCode::Char('Y'));
+        let moved = screen.press(&mut browser, KeyCode::Down);
+        screen.press(&mut browser, KeyCode::Up);
+        screen.press(&mut browser, KeyCode::Enter);
+        let in_popup = screen.press(&mut browser, KeyCode::Char('y'));
+        let scrolled = screen.press(&mut browser, KeyCode::Down);
+
+        assert!(copied[23].contains("copied path"), "{}", copied[23]);
+        assert!(!moved[23].contains("copied"), "{}", moved[23]);
+        assert!(in_popup[23].contains("copied value"), "{}", in_popup[23]);
+        assert!(!scrolled[23].contains("copied"), "{}", scrolled[23]);
+    }
+
+    #[test]
     fn a_popup_takes_every_key_but_esc() {
         let mut browser = in_tree_at(vec![dune()], "blurb");
         let mut screen = TestScreen::new(80, 24);
@@ -1408,6 +1438,23 @@ mod tests {
             let shown = in_documents_pane(&lines[line]);
             assert!(shown.trim_end().ends_with(rating), "{shown}");
         }
+    }
+
+    #[test]
+    fn an_id_wider_than_the_documents_pane_keeps_both_ends() {
+        let ids: Vec<FirestoreDocument> = ["Zk3QmX9aB7cD2eF4gH57", "Zk3QmX9aB7cD2eF4gH58"]
+            .into_iter()
+            .map(|id| document(id, vec![("title", string("t"))]))
+            .collect();
+        let browser = browser_of("books", "", ids);
+
+        let lines = TestScreen::new(60, 20).draw(&browser);
+
+        let shown = in_documents_pane(&lines[3]);
+        assert!(
+            shown.starts_with(" Zk3Q") && shown.contains('…') && shown.ends_with("gH58"),
+            "{shown}"
+        );
     }
 
     #[test]
