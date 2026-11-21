@@ -30,13 +30,16 @@ use console::Style;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 
-/// `bar`, drawn with `template` and redrawn every 120 ms until it is finished.
+/// How often a spinner or a progress bar is redrawn while it runs.
+pub const ANIMATION_TICK: Duration = Duration::from_millis(120);
+
+/// `bar`, drawn with `template` and redrawn every [`ANIMATION_TICK`] until it is finished.
 pub fn animated(bar: ProgressBar, template: &str) -> ProgressBar {
     bar.set_style(
         ProgressStyle::with_template(template)
             .expect("the template is a literal with keys indicatif knows"),
     );
-    bar.enable_steady_tick(Duration::from_millis(120));
+    bar.enable_steady_tick(ANIMATION_TICK);
     bar
 }
 

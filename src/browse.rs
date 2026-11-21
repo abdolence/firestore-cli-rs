@@ -9,22 +9,23 @@ mod tree;
 use crate::connection::Connection;
 use crate::describe::CollectionPath;
 use crate::errors::{is_pipeline_refusal, FsqError, FsqResult};
+use crate::render::ANIMATION_TICK;
 use crate::walk::Walk;
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
 use draw::Viewport;
-use firestore::{FirestoreDb, FirestoreDocument};
+use firestore::{FirestoreCollectionId, FirestoreDb, FirestoreDocument, FirestoreSqlOptions};
+use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
 use ratatui::{DefaultTerminal, Terminal};
 pub use state::FilterTail;
-use state::{Browser, DocumentsQuery, Effect, Message, Movement, BROWSE_DOCUMENT_LIMIT};
+use state::{Browser, DocumentsQuery, Effect, Message, Movement, RequestId, BROWSE_DOCUMENT_LIMIT};
+use std::future::Future;
 use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
-use std::time::Duration;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::task::AbortHandle;
+use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 pub struct BrowseTarget {
@@ -40,52 +41,56 @@ pub struct BrowseTarget {
     pub filter: FilterTail,
 }
 
-/// How long the browser waits for a key before it looks for answers from Firestore.
-const BROWSE_KEY_WAIT: Duration = Duration::from_millis(50);
-
 /// Browses `target` until the user quits. Fails before it draws anything when stdin or stdout is
 /// not a terminal.
 pub async fn run(connection: &Connection, target: BrowseTarget) -> FsqResult<()> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(FsqError::BrowseNeedsTerminal);
     }
-    let (mut browser, first_query) = Browser::open(target, connection.db.get_documents_path());
-    let mut calls = Calls::new(connection.db.clone());
-    let mut screen = Screen::enter()?;
-    let mut viewport = Viewport::default();
-    let mut effects = vec![first_query];
-    loop {
-        for effect in effects.drain(..) {
-            match effect {
-                Effect::Query(query) => calls.query(query),
-                Effect::ListSubcollections { request, document } => {
-                    calls.list_subcollections(request, document)
-                }
-                Effect::Cancel => calls.cancel(),
-                Effect::Quit => return Ok(()),
-            }
-        }
-        screen
-            .terminal
-            .draw(|frame| browser.draw(frame, &mut viewport))?;
-        let key = tokio::task::block_in_place(next_key)?;
-        let typed = key.and_then(|key| {
-            message_for(key, browser.filter_editor().is_some(), viewport.page_rows())
-        });
-        for message in calls.answers().chain(typed) {
-            effects.extend(browser.update(message));
-        }
-    }
+    BROWSER_TASK.scope((), browse(&connection.db, target)).await
 }
 
-fn next_key() -> std::io::Result<Option<KeyEvent>> {
-    if !event::poll(BROWSE_KEY_WAIT)? {
-        return Ok(None);
+/// Draws after every message and resize, and every [`ANIMATION_TICK`] while the browser waits for
+/// Firestore. In between it sleeps.
+async fn browse(db: &FirestoreDb, target: BrowseTarget) -> FsqResult<()> {
+    let (mut browser, first_query) = Browser::open(target, db.get_documents_path());
+    let mut calls = Calls::default();
+    let mut screen = Screen::enter()?;
+    let mut events = EventStream::new();
+    let mut viewport = Viewport::default();
+    let mut effect = Some(first_query);
+    loop {
+        match effect {
+            Some(Effect::Query(query)) => calls.query(db, query),
+            Some(Effect::ListSubcollections { request, document }) => {
+                calls.list_subcollections(db, request, document)
+            }
+            Some(Effect::Cancel) => calls.cancel(),
+            Some(Effect::Quit) => return Ok(()),
+            None => {}
+        }
+        screen.draw(&browser, &mut viewport)?;
+        effect = loop {
+            tokio::select! {
+                answer = calls.answer() => break browser.update(answer),
+                event = events.next() => {
+                    match event.unwrap_or_else(|| Err(std::io::ErrorKind::UnexpectedEof.into()))? {
+                        Event::Key(key) if key.kind == KeyEventKind::Press => {
+                            let editing_filter = browser.filter_editor().is_some();
+                            if let Some(message) =
+                                message_for(key, editing_filter, viewport.page_rows())
+                            {
+                                break browser.update(message);
+                            }
+                        }
+                        Event::Resize(..) => break None,
+                        _ => {}
+                    }
+                }
+                () = tokio::time::sleep(ANIMATION_TICK), if browser.is_waiting() => break None,
+            }
+        };
     }
-    Ok(match event::read()? {
-        Event::Key(key) if key.kind == KeyEventKind::Press => Some(key),
-        _ => None,
-    })
 }
 
 /// What `key` asks of the browser: while the filter is being edited, a typed character goes into
@@ -122,12 +127,22 @@ fn message_for(key: KeyEvent, editing_filter: bool, page_rows: usize) -> Option<
     Some(message)
 }
 
+tokio::task_local! {
+    /// Set while the browser's own task runs. A panic there ends the browser, so the panic hook
+    /// restores the terminal for it, and a panic in a call the browser waits for does not.
+    static BROWSER_TASK: ();
+}
+
 /// Whether a [`Screen`] holds the terminal, which is what tells the panic hook that there is
 /// something to restore.
 static SCREEN_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// The terminal in raw mode on the alternate screen, until this is dropped. On a panic while it
-/// is held, a panic hook restores the terminal before the message prints.
+/// Whether a panic outside the browser's task printed its message over the screen, which the
+/// next frame then draws whole.
+static SCREEN_OVERWRITTEN: AtomicBool = AtomicBool::new(false);
+
+/// The terminal in raw mode on the alternate screen, until this is dropped. On a panic in the browser's own task, a panic hook restores the terminal before the
+/// message prints.
 struct Screen {
     terminal: DefaultTerminal,
 }
@@ -140,10 +155,16 @@ impl Screen {
         PANIC_HOOK.call_once(|| {
             let previous = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
-                if SCREEN_ACTIVE.swap(false, Ordering::SeqCst) {
-                    ratatui::restore();
+                let in_browser_task = BROWSER_TASK.try_with(|_| ()).is_ok();
+                if in_browser_task && SCREEN_ACTIVE.swap(false, Ordering::SeqCst) {
+                    Self::restore();
                 }
                 previous(info);
+                // Only once the message is out, so that a frame drawn while it prints does not
+                // take the flag.
+                if !in_browser_task && SCREEN_ACTIVE.load(Ordering::SeqCst) {
+                    SCREEN_OVERWRITTEN.store(true, Ordering::SeqCst);
+                }
             }));
         });
         SCREEN_ACTIVE.store(true, Ordering::SeqCst);
@@ -151,7 +172,7 @@ impl Screen {
             Ok(terminal) => Ok(Self { terminal }),
             Err(error) => {
                 SCREEN_ACTIVE.store(false, Ordering::SeqCst);
-                ratatui::restore();
+                Self::restore();
                 Err(error.into())
             }
         }
@@ -162,82 +183,107 @@ impl Screen {
         execute!(std::io::stdout(), EnterAlternateScreen)?;
         Terminal::new(CrosstermBackend::new(std::io::stdout()))
     }
-}
 
-impl Drop for Screen {
-    fn drop(&mut self) {
-        SCREEN_ACTIVE.store(false, Ordering::SeqCst);
+    fn draw(&mut self, browser: &Browser, viewport: &mut Viewport) -> std::io::Result<()> {
+        if SCREEN_OVERWRITTEN.swap(false, Ordering::SeqCst) {
+            self.terminal.clear()?;
+        }
+        self.terminal.draw(|frame| browser.draw(frame, viewport))?;
+        Ok(())
+    }
+
+    fn restore() {
         ratatui::restore();
     }
 }
 
-/// The Firestore calls the browser waits for, each of which sends its answer back as a message.
-/// A query replaces the query before it, and a listing the listing before it, since the browser
-/// only waits for the latest of each.
+impl Drop for Screen {
+    fn drop(&mut self) {
+        if SCREEN_ACTIVE.swap(false, Ordering::SeqCst) {
+            Self::restore();
+        }
+    }
+}
+
+/// The Firestore calls the browser waits for. A query replaces the query before it, and a
+/// listing the listing before it, since the browser only waits for the latest of each.
+#[derive(Default)]
 struct Calls {
-    db: FirestoreDb,
-    sender: UnboundedSender<Message>,
-    receiver: UnboundedReceiver<Message>,
-    query: Option<AbortHandle>,
-    listing: Option<AbortHandle>,
+    query: Option<Call<Vec<FirestoreDocument>>>,
+    listing: Option<Call<Vec<FirestoreCollectionId>>>,
 }
 
 impl Calls {
-    fn new(db: FirestoreDb) -> Self {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        Self {
-            db,
-            sender,
-            receiver,
-            query: None,
-            listing: None,
-        }
+    fn query(&mut self, db: &FirestoreDb, query: DocumentsQuery) {
+        let db = db.clone();
+        self.query = Some(Call::spawn(query.request, async move {
+            query.documents(&db).await
+        }));
     }
 
-    fn query(&mut self, query: DocumentsQuery) {
-        let db = self.db.clone();
-        let sender = self.sender.clone();
-        let task = tokio::spawn(async move {
-            let outcome = query.documents(&db).await;
-            let _ = sender.send(Message::DocumentsLoaded {
-                request: query.request,
-                outcome,
-            });
-        });
-        if let Some(replaced) = self.query.replace(task.abort_handle()) {
-            replaced.abort();
-        }
-    }
-
-    fn list_subcollections(&mut self, request: state::RequestId, document: String) {
-        let db = self.db.clone();
-        let sender = self.sender.clone();
-        let task = tokio::spawn(async move {
-            let outcome = Walk::new(&db).collection_ids(Some(&document)).await;
-            let _ = sender.send(Message::SubcollectionsListed { request, outcome });
-        });
-        if let Some(replaced) = self.listing.replace(task.abort_handle()) {
-            replaced.abort();
-        }
+    fn list_subcollections(&mut self, db: &FirestoreDb, request: RequestId, document: String) {
+        let db = db.clone();
+        self.listing = Some(Call::spawn(request, async move {
+            Walk::new(&db).collection_ids(Some(&document)).await
+        }));
     }
 
     fn cancel(&mut self) {
-        for call in [self.query.take(), self.listing.take()]
-            .into_iter()
-            .flatten()
-        {
-            call.abort();
-        }
+        self.query = None;
+        self.listing = None;
     }
 
-    fn answers(&mut self) -> impl Iterator<Item = Message> + '_ {
-        std::iter::from_fn(|| self.receiver.try_recv().ok())
+    /// The answer of the first pending call to end, which never comes while none is pending.
+    async fn answer(&mut self) -> Message {
+        tokio::select! {
+            (request, outcome) = Call::ended(&mut self.query) => {
+                Message::DocumentsLoaded { request, outcome }
+            }
+            (request, outcome) = Call::ended(&mut self.listing) => {
+                Message::SubcollectionsListed { request, outcome }
+            }
+        }
     }
 }
 
-impl Drop for Calls {
+/// A Firestore call the browser waits for, stopped when it is dropped.
+struct Call<T> {
+    request: RequestId,
+    task: JoinHandle<FsqResult<T>>,
+}
+
+impl<T: Send + 'static> Call<T> {
+    fn spawn(
+        request: RequestId,
+        call: impl Future<Output = FsqResult<T>> + Send + 'static,
+    ) -> Self {
+        Self {
+            request,
+            task: tokio::spawn(call),
+        }
+    }
+}
+
+impl<T> Call<T> {
+    /// Waits for the call in `slot` to end and empties the slot. A call that panicked fails with
+    /// [`FsqError::CallPanicked`]. Never ends while the slot is empty.
+    async fn ended(slot: &mut Option<Self>) -> (RequestId, FsqResult<T>) {
+        let Some(call) = slot else {
+            return std::future::pending().await;
+        };
+        let joined = (&mut call.task).await;
+        let request = call.request;
+        *slot = None;
+        (
+            request,
+            joined.unwrap_or_else(|error| Err(FsqError::CallPanicked(error))),
+        )
+    }
+}
+
+impl<T> Drop for Call<T> {
     fn drop(&mut self) {
-        self.cancel();
+        self.task.abort();
     }
 }
 
@@ -245,7 +291,13 @@ impl DocumentsQuery {
     /// Runs the query. Without a filter, a database that refuses pipelines, as a Standard edition
     /// one does, gets the first documents by ID from a listing instead.
     async fn documents(&self, db: &FirestoreDb) -> FsqResult<Vec<FirestoreDocument>> {
-        match db.fluent().sql(self.sql()).query().await {
+        let outcome = db
+            .fluent()
+            .sql(self.sql())
+            .options(FirestoreSqlOptions::read_only())
+            .query()
+            .await;
+        match outcome {
             Err(error) if self.filter.is_empty() && is_pipeline_refusal(&error) => {
                 Walk::new(db)
                     .first_documents(&self.collection, BROWSE_DOCUMENT_LIMIT)
@@ -253,5 +305,45 @@ impl DocumentsQuery {
             }
             outcome => Ok(outcome?),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::browse::state::Load;
+    use crate::render::fixtures::DOCUMENTS_PATH;
+    use std::time::Duration;
+
+    async fn panicking_query() -> FsqResult<Vec<FirestoreDocument>> {
+        panic!("a bug in the query")
+    }
+
+    #[tokio::test]
+    async fn a_call_that_panics_fails_its_load() {
+        let target = BrowseTarget {
+            collection: "books".parse().expect("a collection path"),
+            filter: FilterTail::default(),
+        };
+        let (mut browser, Effect::Query(query)) = Browser::open(target, DOCUMENTS_PATH) else {
+            panic!("no query")
+        };
+        let mut calls = Calls {
+            query: Some(Call::spawn(query.request, panicking_query())),
+            listing: None,
+        };
+
+        let answer = tokio::time::timeout(Duration::from_secs(5), calls.answer())
+            .await
+            .expect("an answer from the call");
+        browser.update(answer);
+
+        assert!(matches!(
+            browser.level().load(),
+            Load::Failed {
+                error: FsqError::CallPanicked(_),
+                ..
+            }
+        ));
     }
 }

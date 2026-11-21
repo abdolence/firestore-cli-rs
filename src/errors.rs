@@ -74,6 +74,8 @@ pub enum FsqError {
     Interrupted,
     #[error("browse draws on the terminal, and stdin or stdout is not one")]
     BrowseNeedsTerminal,
+    #[error("a call to Firestore failed: {0}")]
+    CallPanicked(#[source] tokio::task::JoinError),
     #[error(transparent)]
     InputsFailed(InputsFailed),
     #[error(transparent)]

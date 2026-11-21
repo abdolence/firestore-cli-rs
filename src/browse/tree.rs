@@ -230,6 +230,10 @@ impl Tree {
         self.listing = Listing::Pending(request);
     }
 
+    pub fn is_listing(&self) -> bool {
+        matches!(self.listing, Listing::Pending(_))
+    }
+
     /// Keeps the outcome of the listing `request`, unless the tree stopped waiting for it.
     pub fn listed(&mut self, request: RequestId, outcome: FsqResult<Vec<FirestoreCollectionId>>) {
         if matches!(self.listing, Listing::Pending(pending) if pending == request) {
@@ -242,7 +246,7 @@ impl Tree {
 
     /// Stops waiting for the listing and closes its group. `false` when no listing was pending.
     pub fn cancel_listing(&mut self) -> bool {
-        if !matches!(self.listing, Listing::Pending(_)) {
+        if !self.is_listing() {
             return false;
         }
         self.listing = Listing::NotListed;

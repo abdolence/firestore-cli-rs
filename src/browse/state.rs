@@ -462,6 +462,11 @@ impl Browser {
         &self.current
     }
 
+    /// Whether the current level waits for its documents or its subcollections.
+    pub fn is_waiting(&self) -> bool {
+        matches!(self.current.load, Load::Pending { .. }) || self.current.tree.is_listing()
+    }
+
     pub fn focus(&self) -> Pane {
         self.focus
     }
