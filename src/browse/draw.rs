@@ -393,7 +393,7 @@ impl Browser {
             (None, Load::Stopped { .. }) => {
                 "stopped before the first answer · / edits the filter".to_string()
             }
-            (None, Load::Failed { .. }) => "the query failed · / shows the error".to_string(),
+            (None, Load::Failed { .. }) => "the query failed · / edits the filter".to_string(),
             (None, Load::Done | Load::Pending { .. }) => return None,
         };
         Some(note)
@@ -1047,6 +1047,31 @@ mod tests {
             .iter()
             .position(|line| line.trim_end().ends_with("q quit"))
             .unwrap_or_else(|| panic!("no footer in\n{}", lines.join("\n")));
+        assert_eq!(
+            lines[footer + 1..]
+                .join(" ")
+                .split_whitespace()
+                .collect::<Vec<_>>(),
+            shown.split_whitespace().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_failed_first_read_leaves_the_keys_and_shows_its_error_under_them() {
+        let mut browser = opened("books", "");
+        let error = firestore_error("The database is not reachable from here");
+        let shown = format!("error: {error}");
+        browser.update(Message::DocumentsLoaded {
+            request: query_of(&browser),
+            outcome: Err(error),
+        });
+
+        let lines = TestScreen::new(60, 20).draw(&browser);
+
+        let footer = lines
+            .iter()
+            .position(|line| line.trim_end().ends_with("q quit"))
+            .unwrap_or_else(|| panic!("no keys in\n{}", lines.join("\n")));
         assert_eq!(
             lines[footer + 1..]
                 .join(" ")

@@ -3,12 +3,12 @@ use super::tree::NodePath;
 use crate::field_path::FieldPath;
 use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
-use std::fmt::Write;
 
 impl FilterTail {
     /// The filter of the documents whose field at `path` holds `value`: `WHERE <path> = <value>`,
     /// or `WHERE <path> IS NULL`. `None` for a value SQL has no literal for, such as a map, an
-    /// array, bytes, a reference or a double that is not finite.
+    /// array, bytes, a reference, a double that is not finite or a string with a control
+    /// character.
     pub fn matching(path: &NodePath, value: &Value) -> Option<Self> {
         let condition = match value.value_type.as_ref() {
             None | Some(ValueType::NullValue(_)) => "IS NULL".to_string(),
@@ -35,12 +35,13 @@ impl FilterTail {
 }
 
 /// `text` as a string literal on one line, with the backslash escapes of the BigQuery dialect the
-/// firestore crate parses with. `None` for a text with a NUL, which no literal holds.
+/// firestore crate parses with. `None` for a text with a control character other than a line
+/// break or a tab: the dialect has no escape for most of them, and the line of the filter editor
+/// cannot show one as it is.
 fn quoted(text: &str) -> Option<String> {
     let mut literal = String::from("'");
     for character in text.chars() {
         match character {
-            '\0' => return None,
             '\'' | '\\' => {
                 literal.push('\\');
                 literal.push(character);
@@ -48,9 +49,7 @@ fn quoted(text: &str) -> Option<String> {
             '\n' => literal.push_str("\\n"),
             '\r' => literal.push_str("\\r"),
             '\t' => literal.push_str("\\t"),
-            control if control.is_control() => {
-                let _ = write!(literal, "\\u{:04x}", u32::from(control));
-            }
+            control if control.is_control() => return None,
             _ => literal.push(character),
         }
     }
@@ -108,6 +107,15 @@ mod tests {
 
         assert_eq!(compared_string(&filter), text);
         assert!(!filter.contains(['\n', '\t']), "{filter}");
+    }
+
+    #[test]
+    fn a_string_with_a_control_character_the_dialect_cannot_escape_has_no_filter() {
+        for control in ['\u{1b}', '\u{7}', '\u{7f}', '\u{85}', '\u{8}', '\u{c}'] {
+            let title = format!("a{control}[31mb");
+
+            assert_eq!(matching("title", &string(&title)), None, "{control:?}");
+        }
     }
 
     #[test]

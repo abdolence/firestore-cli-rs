@@ -1,5 +1,7 @@
 use super::state::FilterTail;
+use ratatui::buffer::CellWidth;
 use reedline::LineBuffer;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// A change to the filter being edited. The cursor moves and deletes by grapheme, and by word as
 /// Unicode splits words, the way fsq's prompt edits a line.
@@ -144,14 +146,14 @@ impl FilterEditor {
     }
 }
 
-/// The places a window of a text can start or end at: the start of every character with a width,
-/// and last the end of the text. A character without width, such as a combining mark, stays with
+/// The places a window of a text can start or end at: the start of every grapheme with a width,
+/// as ratatui draws the line, and last the end of the text. A grapheme without width stays with
 /// the one before it.
 struct Stops(Vec<Stop>);
 
 struct Stop {
     byte: usize,
-    /// The column the character is drawn at, from the start of the text.
+    /// The column the grapheme is drawn at, from the start of the text.
     column: usize,
 }
 
@@ -159,8 +161,13 @@ impl Stops {
     fn of(text: &str) -> Self {
         let mut stops = Vec::new();
         let mut column = 0;
-        for (byte, character) in text.char_indices() {
-            let width = console::measure_text_width(character.encode_utf8(&mut [0; 4]));
+        for (byte, grapheme) in text.grapheme_indices(true) {
+            // ratatui draws nothing of a grapheme with a control character in it.
+            let width = if grapheme.contains(char::is_control) {
+                0
+            } else {
+                usize::from(grapheme.cell_width())
+            };
             if width > 0 {
                 stops.push(Stop { byte, column });
             }
@@ -318,6 +325,17 @@ mod tests {
             "名前".repeat(5).chars().skip(1).collect::<String>()
         );
         assert_eq!(window.cursor_column, 19);
+    }
+
+    #[test]
+    fn the_cursor_column_counts_each_grapheme_as_wide_as_it_is_drawn() {
+        for emoji in ["👍🏽", "👨‍👩‍👧", "❤️"] {
+            let editor = editor(&format!("WHERE t = '{emoji}'"));
+
+            let window = editor.window(40, 0);
+
+            assert_eq!(window.cursor_column, "WHERE t = ''".len() + 2, "{emoji}");
+        }
     }
 
     #[test]

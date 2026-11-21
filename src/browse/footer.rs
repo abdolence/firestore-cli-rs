@@ -1,7 +1,7 @@
 use super::draw::Viewport;
 use super::editor::FilterEditor;
-use super::state::{Browser, Copied, Failure, FilterTail, Load, BROWSE_DOCUMENT_LIMIT};
-use super::tree::{Listing, Row};
+use super::state::{Browser, Copied, Failure, FilterTail, BROWSE_DOCUMENT_LIMIT};
+use super::tree::Row;
 use crate::errors::FsqError;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Stylize;
@@ -79,15 +79,13 @@ impl Browser {
         frame.render_widget(pinned.line(), right);
     }
 
-    /// The error under the footer, wrapped at words to `width` columns: the error of the failed
-    /// filter while it is in the editor, else the error of a failed listing.
+    /// The error under the footer, the one Ctrl-G shows whole, wrapped at words to `width`
+    /// columns.
     pub(super) fn footer_error(&self, width: usize) -> Vec<Line<'static>> {
-        let level = self.level();
-        let error = match (self.filter_editor(), level.load(), level.tree().listing()) {
-            (Some(_), Load::Failed { error, .. }, _) | (None, _, Listing::Failed(error)) => error,
-            _ => return Vec::new(),
-        };
-        error.footer_lines(width)
+        self.failure()
+            .and_then(|failure| self.error(failure))
+            .map(|error| error.footer_lines(width))
+            .unwrap_or_default()
     }
 }
 

@@ -37,7 +37,7 @@ use std::future::Future;
 use std::io::{IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
@@ -79,7 +79,6 @@ pub async fn run(
 async fn browse(db: &FirestoreDb, browser: &mut Browser, first_query: Effect) -> FsqResult<()> {
     let mut calls = Calls::default();
     let mut screen = Screen::enter()?;
-    let mut events = EventStream::new();
     let mut viewport = Viewport::default();
     let mut effect = Some(first_query);
     loop {
@@ -97,8 +96,8 @@ async fn browse(db: &FirestoreDb, browser: &mut Browser, first_query: Effect) ->
         effect = loop {
             tokio::select! {
                 answer = calls.answer() => break browser.update(answer),
-                event = events.next() => {
-                    match event.unwrap_or_else(|| Err(std::io::ErrorKind::UnexpectedEof.into()))? {
+                event = screen.next_event() => {
+                    match event? {
                         Event::Key(key) if key.kind == KeyEventKind::Press => {
                             break pressed(browser, &mut viewport, key);
                         }
@@ -131,7 +130,8 @@ fn pressed(browser: &mut Browser, viewport: &mut Viewport, key: KeyEvent) -> Opt
 }
 
 /// What `key` asks of the browser in `mode`: while the filter is being edited, a typed character
-/// goes into it, and a popup takes no key but Esc, Ctrl-C, and `y` and `Y`, which copy. Raw mode
+/// goes into it, and a popup takes no key but Esc, Ctrl-C, and `y` and `Y`, which copy. A letter
+/// with Ctrl is a key of its own, which does nothing unless it is bound, as Ctrl-C is. Raw mode
 /// delivers Ctrl-C as a key rather than a signal.
 fn message_for(key: KeyEvent, mode: Mode, page_rows: usize) -> Option<Message> {
     let control = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -145,12 +145,12 @@ fn message_for(key: KeyEvent, mode: Mode, page_rows: usize) -> Option<Message> {
     match mode {
         Mode::Popup => match key.code {
             KeyCode::Esc => Some(Message::ClosePopup),
-            KeyCode::Char('y') => Some(Message::Copy(Copied::Value)),
-            KeyCode::Char('Y') => Some(Message::Copy(Copied::Path)),
+            KeyCode::Char('y') if !control => Some(Message::Copy(Copied::Value)),
+            KeyCode::Char('Y') if !control => Some(Message::Copy(Copied::Path)),
             _ => None,
         },
         Mode::FilterEditor => filter_message_for(key, control),
-        Mode::Panes => pane_message_for(key, page_rows),
+        Mode::Panes => pane_message_for(key, control, page_rows),
     }
 }
 
@@ -174,11 +174,12 @@ fn filter_message_for(key: KeyEvent, control: bool) -> Option<Message> {
     Some(Message::Edit(edit))
 }
 
-fn pane_message_for(key: KeyEvent, page_rows: usize) -> Option<Message> {
+fn pane_message_for(key: KeyEvent, control: bool, page_rows: usize) -> Option<Message> {
     if let Some(movement) = movement_for(key, page_rows) {
         return Some(Message::Move(movement));
     }
     let message = match key.code {
+        KeyCode::Char(_) if control => return None,
         KeyCode::Right | KeyCode::Char('l') => Message::Expand,
         KeyCode::Enter => Message::Open,
         KeyCode::Char(' ') => Message::Toggle,
@@ -235,11 +236,13 @@ static SCREEN_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// next frame then draws whole.
 static SCREEN_OVERWRITTEN: AtomicBool = AtomicBool::new(false);
 
-/// The terminal in raw mode on the alternate screen, with bracketed paste on, until this is
-/// dropped. On a panic in the browser's own task, a panic hook restores the terminal before the
-/// message prints.
+/// The terminal in raw mode on the alternate screen, with bracketed paste on, and its events,
+/// until this is dropped. On a panic in the browser's own task, a panic hook restores the
+/// terminal before the message prints.
 struct Screen {
     terminal: DefaultTerminal,
+    /// `None` only while the screen is dropped.
+    events: Option<EventStream>,
     /// Whether colour is on, as for the rest of fsq: off with `NO_COLOR` set, for one.
     colour: bool,
 }
@@ -268,6 +271,7 @@ impl Screen {
         match Self::init_terminal() {
             Ok(terminal) => Ok(Self {
                 terminal,
+                events: Some(EventStream::new()),
                 colour: console::colors_enabled(),
             }),
             Err(error) => {
@@ -286,6 +290,18 @@ impl Screen {
             EnableBracketedPaste
         )?;
         Terminal::new(CrosstermBackend::new(std::io::stdout()))
+    }
+
+    /// The next key, paste or resize. A terminal that ends its input is an error.
+    async fn next_event(&mut self) -> std::io::Result<Event> {
+        let events = self
+            .events
+            .as_mut()
+            .expect("the events end only when the screen is dropped");
+        events
+            .next()
+            .await
+            .unwrap_or_else(|| Err(std::io::ErrorKind::UnexpectedEof.into()))
     }
 
     fn draw(&mut self, browser: &Browser, viewport: &mut Viewport) -> std::io::Result<()> {
@@ -317,6 +333,17 @@ impl Screen {
 
 impl Drop for Screen {
     fn drop(&mut self) {
+        // Dropping the stream wakes crossterm's reader, which reedline shares. When the browser
+        // read a key last, nothing waits on the reader, so the wake stays queued, and reedline's
+        // next prompt takes it for a timeout when it asks where the cursor is, and fails.
+        // Reading until nothing is left takes the wake, and with it the keys pressed while the
+        // browser was still on screen.
+        self.events = None;
+        while let Ok(true) = crossterm::event::poll(Duration::ZERO) {
+            if crossterm::event::read().is_err() {
+                break;
+            }
+        }
         if SCREEN_ACTIVE.swap(false, Ordering::SeqCst) {
             Self::restore();
         }
@@ -621,6 +648,39 @@ mod tests {
         );
         assert_eq!(selected(&browser), 0);
         assert!(browser.popup().is_none());
+    }
+
+    #[test]
+    fn a_letter_with_ctrl_is_not_the_letter_in_the_panes_and_the_popup() {
+        let (mut browser, mut viewport) = browser_of(vec![dune()]);
+        press(&mut browser, &mut viewport, KeyCode::Tab);
+
+        for letter in ['q', 'r', 'y', 'f', 'l', '/'] {
+            assert_eq!(
+                press_with(
+                    &mut browser,
+                    &mut viewport,
+                    KeyCode::Char(letter),
+                    KeyModifiers::CONTROL
+                ),
+                None,
+                "Ctrl-{letter}"
+            );
+        }
+        assert!(browser.filter_editor().is_none());
+        assert_eq!(tree_rows(&browser), dune().fields.len() + 1);
+        press(&mut browser, &mut viewport, KeyCode::Enter);
+        press(&mut browser, &mut viewport, KeyCode::Enter);
+        assert!(browser.popup().is_some());
+        assert_eq!(
+            press_with(
+                &mut browser,
+                &mut viewport,
+                KeyCode::Char('y'),
+                KeyModifiers::CONTROL
+            ),
+            None
+        );
     }
 
     /// What `effect` writes to the terminal to put its text on the clipboard.

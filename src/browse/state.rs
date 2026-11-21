@@ -631,9 +631,11 @@ impl Browser {
         Some(Effect::Quit)
     }
 
-    /// Keeps the answer to the query `request`, unless the browser stopped waiting for it. A
-    /// failed filter opens in the editor, unless the editor is open already with what the user is
-    /// typing. Documents read again with the filter they were read with keep the selected
+    /// Keeps the answer to the query `request`, unless the browser stopped waiting for it. A new
+    /// filter that fails opens in the editor to be fixed, unless the editor is open already with
+    /// what the user is typing. A read with the filter the documents were read with, such as the
+    /// first one or a reload, fails for a reason the filter cannot fix, so the keys stay with
+    /// the panes. Documents read again with the filter they were read with keep the selected
     /// document and its tree, while it is among them.
     fn loaded(&mut self, request: RequestId, outcome: FsqResult<Vec<FirestoreDocument>>) {
         let level = &mut self.current;
@@ -672,8 +674,10 @@ impl Browser {
                 }
             }
             Err(error) => {
-                self.filter_editor
-                    .get_or_insert_with(|| FilterEditor::from(&filter));
+                if filter != level.filter {
+                    self.filter_editor
+                        .get_or_insert_with(|| FilterEditor::from(&filter));
+                }
                 level.load = Load::Failed { error, filter };
             }
         }
