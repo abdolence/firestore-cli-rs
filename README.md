@@ -419,8 +419,9 @@ books  WHERE pages > 100 LIMIT 100  · 2 documents
   filter that failed, so that it can be corrected. In the error, the filter is line 2 of the statement;
 * the last row of the tree is `subcollections`. Opening it lists the collections under the document, and opening one
   of them browses it without a filter. Esc returns to the document as it was left;
-* the browser needs a terminal on stdin and stdout, so a script or piped input that reaches `\browse` fails with an
-  error.
+* the browser needs a terminal on stdin and stdout, so `\browse` in piped input, or with stdout sent to a pipe or a
+  file, fails with an error. In `fsq -e` and `fsq -f` at a terminal, `\browse` opens the browser, and the script goes
+  on after it quits.
 
 The filter runs as a pipeline, which needs an Enterprise edition database. On a Standard edition database, which
 refuses pipelines, the browser without a filter shows the first 100 documents by ID, and a filter shows the refusal.
