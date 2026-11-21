@@ -1,10 +1,11 @@
 use super::editor::{Edit, FilterEditor};
-use super::tree::{Expansion, Tree};
+use super::tree::{Expansion, Fold, Listing, NodePath, Row, Tree};
 use super::BrowseTarget;
 use crate::describe::CollectionPath;
 use crate::errors::{FsqError, FsqResult};
+use firestore::gcloud_sdk::google::firestore::v1::Value;
 use firestore::{FirestoreCollectionId, FirestoreDb, FirestoreDocument};
-use sqlparser::ast::{Expr, LimitClause, Statement, Value, ValueWithSpan};
+use sqlparser::ast::{self, Expr, LimitClause, Statement, ValueWithSpan};
 use sqlparser::dialect::BigQueryDialect;
 use sqlparser::parser::Parser;
 use std::fmt::{Display, Formatter};
@@ -33,7 +34,7 @@ impl FilterTail {
         match self.limit() {
             None => Some(BROWSE_DOCUMENT_LIMIT),
             Some(Expr::Value(ValueWithSpan {
-                value: Value::Number(count, _),
+                value: ast::Value::Number(count, _),
                 ..
             })) => count.parse().ok(),
             Some(_) => None,
@@ -228,8 +229,8 @@ pub enum Pane {
     Tree,
 }
 
-/// A move of the cursor in the focused pane, by rows.
-#[derive(Debug, Clone, Copy)]
+/// A move of the cursor in the focused pane, or of the text of a popup, by rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Movement {
     Up(usize),
     Down(usize),
@@ -250,18 +251,56 @@ impl Movement {
     }
 }
 
+/// What the keys go to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Panes,
+    FilterEditor,
+    /// A popup, over the panes and over the filter editor when that is open too.
+    Popup,
+}
+
+/// A box over the panes that takes every key until Esc or Ctrl-C closes it.
+#[derive(Debug)]
+pub enum Popup {
+    /// The value at `path` in the selected document, whole, as it was when the popup opened.
+    Value { path: NodePath, value: Value },
+    /// The whole error of a failed query or listing.
+    Error(Failure),
+    /// Every key of the browser.
+    Help,
+}
+
+/// What failed on the current level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Failure {
+    Query,
+    Listing,
+}
+
 #[derive(Debug)]
 pub enum Message {
     Move(Movement),
     /// Expands the row under the cursor, opens a subcollection, or in the documents pane moves
     /// to the tree.
     Expand,
+    /// Shows the value under the cursor whole, a leaf or an expanded map or array, and else
+    /// does what [`Message::Expand`] does.
+    Open,
+    /// Expands the row under the cursor, or collapses it when it is expanded.
+    Toggle,
     /// Collapses the row under the cursor or moves to the row it is in, and from a top-level row
-    /// back to the documents.
+    /// back to the documents. In the documents pane it goes back up as [`Message::Back`] does.
     Collapse,
     SwitchPane,
     /// Goes back up to the collection the current one was opened from.
     Back,
+    /// Reads the documents of the current level again, with the filter they were read with.
+    Reload,
+    /// Shows the whole error of what failed, as [`Browser::failure`] names it.
+    ShowError,
+    ShowHelp,
+    ClosePopup,
     EditFilter,
     Edit(Edit),
     /// Text pasted at once, which goes into the filter being edited as one line. With no filter
@@ -270,7 +309,7 @@ pub enum Message {
     RunFilter,
     CancelFilter,
     /// Ctrl-C, which ends the innermost thing going on: stops waiting for Firestore, else closes
-    /// the filter editor, else quits.
+    /// the popup, else the filter editor, else quits.
     Interrupt,
     Quit,
     DocumentsLoaded {
@@ -306,6 +345,7 @@ pub struct Browser {
     parents: Vec<Level>,
     focus: Pane,
     filter_editor: Option<FilterEditor>,
+    popup: Option<Popup>,
     documents_path: String,
     last_request: RequestId,
 }
@@ -321,6 +361,7 @@ impl Browser {
             parents: Vec::new(),
             focus: Pane::Documents,
             filter_editor: None,
+            popup: None,
             documents_path: documents_path.to_string(),
             last_request: request,
         };
@@ -331,7 +372,9 @@ impl Browser {
         match message {
             Message::Move(movement) => self.move_cursor(movement),
             Message::Expand => return self.expand(),
-            Message::Collapse => self.collapse(),
+            Message::Open => return self.open_at_cursor(),
+            Message::Toggle => return self.toggle(),
+            Message::Collapse => return self.collapse(),
             Message::SwitchPane => {
                 self.focus = match self.focus {
                     Pane::Documents => Pane::Tree,
@@ -339,6 +382,17 @@ impl Browser {
                 }
             }
             Message::Back => return self.back(),
+            Message::Reload => {
+                let filter = self.current.filter.clone();
+                return Some(self.read(filter));
+            }
+            Message::ShowError => {
+                if let Some(failure) = self.failure() {
+                    self.popup = Some(Popup::Error(failure));
+                }
+            }
+            Message::ShowHelp => self.popup = Some(Popup::Help),
+            Message::ClosePopup => self.popup = None,
             Message::EditFilter => {
                 self.filter_editor = Some(FilterEditor::from(self.current.filter_to_edit()))
             }
@@ -348,7 +402,7 @@ impl Browser {
                 }
             }
             Message::Paste(pasted) => {
-                if let Some(editor) = &mut self.filter_editor {
+                if let (None, Some(editor)) = (&self.popup, &mut self.filter_editor) {
                     editor.paste(&pasted);
                 }
             }
@@ -397,18 +451,52 @@ impl Browser {
             self.focus = Pane::Tree;
             return None;
         }
-        match level.tree.expand(document)? {
+        let expansion = level.tree.expand(document)?;
+        let document = document.name.clone();
+        Some(self.expanded(expansion, document))
+    }
+
+    fn open_at_cursor(&mut self) -> Option<Effect> {
+        let level = &self.current;
+        let document = level.selected_document()?;
+        if self.focus == Pane::Tree {
+            if let Some(Row::Field {
+                path,
+                value,
+                fold: Fold::Leaf | Fold::Expanded,
+            }) = level.tree.cursor_row(document)
+            {
+                let value = value.clone();
+                self.popup = Some(Popup::Value { path, value });
+                return None;
+            }
+        }
+        self.expand()
+    }
+
+    fn toggle(&mut self) -> Option<Effect> {
+        let level = &mut self.current;
+        let document = level.documents.as_ref()?.get(level.selected)?;
+        if self.focus == Pane::Documents {
+            return None;
+        }
+        let expansion = level.tree.toggle(document)?;
+        let document = document.name.clone();
+        Some(self.expanded(expansion, document))
+    }
+
+    /// What `expansion` of the tree of `document`, a full resource name, asks of Firestore.
+    fn expanded(&mut self, expansion: Expansion, document: String) -> Effect {
+        match expansion {
             Expansion::ListSubcollections => {
-                let document = document.name.clone();
                 let request = self.next_request();
                 self.current.tree.listing_started(request);
-                Some(Effect::ListSubcollections { request, document })
+                Effect::ListSubcollections { request, document }
             }
             Expansion::OpenSubcollection(collection_id) => {
-                let parent =
-                    FirestoreDb::relative_document_name(&self.documents_path, &document.name);
+                let parent = FirestoreDb::relative_document_name(&self.documents_path, &document);
                 let path = CollectionPath::in_document(parent, collection_id);
-                Some(self.go_down(path))
+                self.go_down(path)
             }
         }
     }
@@ -426,18 +514,16 @@ impl Browser {
         Effect::Query(query)
     }
 
-    fn collapse(&mut self) {
+    fn collapse(&mut self) -> Option<Effect> {
+        if self.focus == Pane::Documents {
+            return self.back();
+        }
         let level = &mut self.current;
-        let Some(document) = level
-            .documents
-            .as_ref()
-            .and_then(|documents| documents.get(level.selected))
-        else {
-            return;
-        };
-        if self.focus == Pane::Tree && !level.tree.collapse(document) {
+        let document = level.documents.as_ref()?.get(level.selected)?;
+        if !level.tree.collapse(document) {
             self.focus = Pane::Documents;
         }
+        None
     }
 
     /// Returns to the level the current one was opened from, as it was left. Whatever the
@@ -450,12 +536,16 @@ impl Browser {
 
     fn run_filter(&mut self) -> Option<Effect> {
         let editor = self.filter_editor.take()?;
+        Some(self.read(FilterTail::from(editor.text())))
+    }
+
+    /// Reads the documents of the current level with `filter`.
+    fn read(&mut self, filter: FilterTail) -> Effect {
         let request = self.next_request();
         let level = &mut self.current;
-        let filter = FilterTail::from(editor.text());
         let query = level.query(request, filter.clone());
         level.load = Load::Pending { request, filter };
-        Some(Effect::Query(query))
+        Effect::Query(query)
     }
 
     fn interrupt(&mut self) -> Option<Effect> {
@@ -464,15 +554,16 @@ impl Browser {
         if level.tree.cancel_listing() || query_stopped {
             return Some(Effect::Cancel);
         }
-        match self.filter_editor.take() {
-            Some(_) => None,
-            None => Some(Effect::Quit),
+        if self.popup.take().is_some() || self.filter_editor.take().is_some() {
+            return None;
         }
+        Some(Effect::Quit)
     }
 
     /// Keeps the answer to the query `request`, unless the browser stopped waiting for it. A
     /// failed filter opens in the editor, unless the editor is open already with what the user is
-    /// typing.
+    /// typing. Documents read again with the filter they were read with keep the selected
+    /// document and its tree, while it is among them.
     fn loaded(&mut self, request: RequestId, outcome: FsqResult<Vec<FirestoreDocument>>) {
         let level = &mut self.current;
         if !matches!(&level.load, Load::Pending { request: pending, .. } if *pending == request) {
@@ -483,10 +574,30 @@ impl Browser {
         };
         match outcome {
             Ok(documents) => {
+                let kept = level
+                    .selected_document()
+                    .filter(|_| level.filter == filter)
+                    .and_then(|selected| {
+                        documents
+                            .iter()
+                            .position(|document| document.name == selected.name)
+                    });
                 level.documents = Some(documents);
                 level.filter = filter;
-                level.selected = 0;
-                level.tree = Tree::default();
+                match kept {
+                    Some(position) => level.selected = position,
+                    None => {
+                        level.selected = 0;
+                        level.tree = Tree::default();
+                    }
+                }
+                let selected = level
+                    .documents
+                    .as_ref()
+                    .and_then(|documents| documents.get(level.selected));
+                if let Some(document) = selected {
+                    level.tree.keep_cursor_in(document);
+                }
             }
             Err(error) => {
                 self.filter_editor
@@ -494,6 +605,41 @@ impl Browser {
                 level.load = Load::Failed { error, filter };
             }
         }
+    }
+
+    /// What Ctrl-G shows the whole error of: while the filter is in the editor, its failed query;
+    /// else a failed listing, else a failed query.
+    pub fn failure(&self) -> Option<Failure> {
+        let level = &self.current;
+        let query_failed = matches!(level.load, Load::Failed { .. });
+        let listing_failed = matches!(level.tree.listing(), Listing::Failed(_));
+        match (self.filter_editor.is_some(), query_failed, listing_failed) {
+            (true, true, _) | (false, true, false) => Some(Failure::Query),
+            (false, _, true) => Some(Failure::Listing),
+            (true, false, _) | (false, false, false) => None,
+        }
+    }
+
+    /// The error of `failure`, while the current level still has it.
+    pub fn error(&self, failure: Failure) -> Option<&FsqError> {
+        let level = &self.current;
+        match (failure, &level.load, level.tree.listing()) {
+            (Failure::Query, Load::Failed { error, .. }, _)
+            | (Failure::Listing, _, Listing::Failed(error)) => Some(error),
+            _ => None,
+        }
+    }
+
+    pub fn mode(&self) -> Mode {
+        match (&self.popup, &self.filter_editor) {
+            (Some(_), _) => Mode::Popup,
+            (None, Some(_)) => Mode::FilterEditor,
+            (None, None) => Mode::Panes,
+        }
+    }
+
+    pub fn popup(&self) -> Option<&Popup> {
+        self.popup.as_ref()
     }
 
     pub fn level(&self) -> &Level {
@@ -806,6 +952,31 @@ mod tests {
 
         assert_eq!(browser.update(Message::Interrupt), Some(Effect::Cancel));
         assert!(browser.filter_editor().is_some());
+        assert_eq!(browser.update(Message::Interrupt), None);
+        assert!(browser.filter_editor().is_none());
+        assert_eq!(browser.update(Message::Interrupt), Some(Effect::Quit));
+    }
+
+    #[test]
+    fn ctrl_c_closes_the_popup_before_the_filter_editor_under_it() {
+        let mut browser = browser();
+        let query = run_filter(&mut browser, "WHERE pagez > 100");
+        browser.update(Message::DocumentsLoaded {
+            request: query.request,
+            outcome: Err(FsqError::NoProject),
+        });
+
+        browser.update(Message::ShowError);
+        assert!(matches!(
+            browser.popup(),
+            Some(Popup::Error(Failure::Query))
+        ));
+        assert_eq!(browser.mode(), Mode::Popup);
+        browser.update(Message::Paste(" AND".to_string()));
+
+        assert_eq!(browser.update(Message::Interrupt), None);
+        assert!(browser.popup().is_none());
+        assert_eq!(edited_text(&browser), Some("WHERE pagez > 100"));
         assert_eq!(browser.update(Message::Interrupt), None);
         assert!(browser.filter_editor().is_none());
         assert_eq!(browser.update(Message::Interrupt), Some(Effect::Quit));

@@ -1,6 +1,6 @@
 use super::draw::Viewport;
 use super::editor::FilterEditor;
-use super::state::{Browser, FilterTail, Load, BROWSE_DOCUMENT_LIMIT};
+use super::state::{Browser, Failure, FilterTail, Load, BROWSE_DOCUMENT_LIMIT};
 use super::tree::Listing;
 use crate::errors::FsqError;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -20,11 +20,26 @@ const FILTER_PLACEHOLDER: &str = "WHERE … ORDER BY … LIMIT …";
 const HINT_SEPARATOR: &str = " · ";
 
 impl Browser {
-    /// Draws the filter editor while it is open, else the keys.
+    /// Draws the filter editor while it is open, else the keys. A popup over the panes keeps its
+    /// own keys, and only the stop of a load shows here, beside an editor without its cursor.
     pub(super) fn draw_footer(&self, frame: &mut Frame, area: Rect, viewport: &mut Viewport) {
-        match self.filter_editor() {
-            Some(editor) => editor.draw(frame, area, viewport),
-            None => self.draw_key_hints(frame, area),
+        match (self.filter_editor(), self.popup()) {
+            (Some(editor), popup) => {
+                let mut hints = vec![Hint::new("Enter", "run", 2), Hint::new("Esc", "cancel", 1)];
+                if self.failure() == Some(Failure::Query) {
+                    hints.push(Hint::new("Ctrl-G", "error", 3));
+                }
+                let cursor = editor.draw(frame, area, viewport, Hints(hints));
+                if popup.is_none() {
+                    frame.set_cursor_position(cursor);
+                }
+            }
+            (None, Some(_)) => {
+                if self.is_waiting() {
+                    frame.render_widget(Hints(vec![Hint::new("Ctrl-C", "stop", 0)]).line(), area);
+                }
+            }
+            (None, None) => self.draw_key_hints(frame, area),
         }
     }
 
@@ -38,10 +53,13 @@ impl Browser {
         if self.has_parent() {
             hints.push(Hint::new("Esc", "back", 5));
         }
+        if self.failure().is_some() {
+            hints.push(Hint::new("Ctrl-G", "error", 7));
+        }
         if self.is_waiting() {
             hints.push(Hint::new("Ctrl-C", "stop", 6));
         }
-        let pinned = Hints(vec![Hint::new("q", "quit", 0)]);
+        let pinned = Hints(vec![Hint::new("?", "help", 0), Hint::new("q", "quit", 0)]);
         let [left, right] =
             Layout::horizontal([Constraint::Fill(1), Constraint::Length(pinned.columns())])
                 .spacing(2)
@@ -65,13 +83,15 @@ impl Browser {
 
 impl FilterEditor {
     /// Draws the filter being edited after its prompt, scrolled to keep the cursor in view, and
-    /// the keys that end the edit on the right.
-    fn draw(&self, frame: &mut Frame, area: Rect, viewport: &mut Viewport) {
-        let hints = Hints(vec![
-            Hint::new("Enter", "run", 2),
-            Hint::new("Esc", "cancel", 1),
-        ])
-        .fitted(usize::from(area.width) / 2);
+    /// `hints`, the keys that end the edit, on the right. Returns where the cursor goes.
+    fn draw(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        viewport: &mut Viewport,
+        hints: Hints,
+    ) -> Position {
+        let hints = hints.fitted(usize::from(area.width) / 2);
         let [line_area, hints_area] =
             Layout::horizontal([Constraint::Fill(1), Constraint::Length(hints.columns())])
                 .spacing(2)
@@ -110,10 +130,7 @@ impl FilterEditor {
         }
         frame.render_widget(Line::from(spans), line_area);
         let column = u16::try_from(FILTER_PROMPT.len() + window.cursor_column).unwrap_or(u16::MAX);
-        frame.set_cursor_position(Position::new(
-            line_area.x.saturating_add(column),
-            line_area.y,
-        ));
+        Position::new(line_area.x.saturating_add(column), line_area.y)
     }
 }
 
@@ -144,7 +161,7 @@ impl FsqError {
 
 /// A key and what it does, as the footer names it.
 #[derive(Debug, Clone, Copy)]
-struct Hint {
+pub(super) struct Hint {
     key: &'static str,
     action: &'static str,
     /// The hints that do not fit go lowest first.
@@ -152,7 +169,7 @@ struct Hint {
 }
 
 impl Hint {
-    fn new(key: &'static str, action: &'static str, priority: u8) -> Self {
+    pub(super) fn new(key: &'static str, action: &'static str, priority: u8) -> Self {
         Self {
             key,
             action,
@@ -166,11 +183,11 @@ impl Hint {
 }
 
 /// Hints in the order they show, their keys bright and what they do dim.
-struct Hints(Vec<Hint>);
+pub(super) struct Hints(pub(super) Vec<Hint>);
 
 impl Hints {
     /// These hints without those of the lowest priority that do not fit in `width` columns.
-    fn fitted(mut self, width: usize) -> Self {
+    pub(super) fn fitted(mut self, width: usize) -> Self {
         while self.width() > width {
             let Some(lowest) = (0..self.0.len()).min_by_key(|&position| self.0[position].priority)
             else {
@@ -190,7 +207,7 @@ impl Hints {
         u16::try_from(self.width()).unwrap_or(u16::MAX)
     }
 
-    fn line(&self) -> Line<'static> {
+    pub(super) fn line(&self) -> Line<'static> {
         let mut spans = Vec::new();
         for (position, hint) in self.0.iter().enumerate() {
             if position > 0 {

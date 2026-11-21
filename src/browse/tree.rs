@@ -1,5 +1,6 @@
 use super::state::RequestId;
 use crate::errors::{FsqError, FsqResult};
+use crate::field_path::FieldPath;
 use crate::render::sorted_keys;
 use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::{ArrayValue, MapValue, Value};
@@ -41,7 +42,55 @@ impl NodePath {
     }
 }
 
+impl From<&NodePath> for FieldPath {
+    fn from(path: &NodePath) -> Self {
+        path.0
+            .iter()
+            .fold(Self::default(), |field_path, segment| match segment {
+                Segment::Field(name) => field_path.field(name),
+                Segment::Index(index) => field_path.element(*index),
+            })
+    }
+}
+
 impl Display for Segment {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Name::from(self).fmt(f)
+    }
+}
+
+/// The name of a value as its row shows it, borrowed from the document: a field name, or a
+/// position in an array as `[2]`.
+#[derive(Debug, Clone, Copy)]
+pub enum Name<'a> {
+    Field(&'a str),
+    Index(usize),
+}
+
+impl Name<'_> {
+    /// The columns this name takes on screen.
+    pub fn width(self) -> usize {
+        match self {
+            Self::Field(name) => console::measure_text_width(name),
+            Self::Index(index) => {
+                let digits =
+                    std::iter::successors(Some(index), |rest| (*rest >= 10).then(|| rest / 10));
+                digits.count() + 2
+            }
+        }
+    }
+}
+
+impl<'a> From<&'a Segment> for Name<'a> {
+    fn from(segment: &'a Segment) -> Self {
+        match segment {
+            Segment::Field(name) => Self::Field(name),
+            Segment::Index(index) => Self::Index(*index),
+        }
+    }
+}
+
+impl Display for Name<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Field(name) => f.write_str(name),
@@ -137,6 +186,44 @@ impl Tree {
         rows
     }
 
+    /// The most `width` gives for the depth and the name of a value in `document`, over every
+    /// value at any depth: every field row the tree has with each map and array expanded.
+    pub fn widest_field(
+        document: &FirestoreDocument,
+        width: impl Fn(usize, Name<'_>) -> usize,
+    ) -> usize {
+        fn widest_inside(
+            value: &Value,
+            depth: usize,
+            width: &impl Fn(usize, Name<'_>) -> usize,
+        ) -> usize {
+            let widest = |name: Name<'_>, value: &Value| {
+                width(depth, name).max(widest_inside(value, depth + 1, width))
+            };
+            match Inside::of(value) {
+                Some(Inside::Map(map)) => map
+                    .fields
+                    .iter()
+                    .map(|(name, value)| widest(Name::Field(name), value))
+                    .max(),
+                Some(Inside::Array(array)) => array
+                    .values
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| widest(Name::Index(index), value))
+                    .max(),
+                None => None,
+            }
+            .unwrap_or_default()
+        }
+        document
+            .fields
+            .iter()
+            .map(|(name, value)| width(0, Name::Field(name)).max(widest_inside(value, 1, &width)))
+            .max()
+            .unwrap_or_default()
+    }
+
     fn push_value<'a>(&self, path: NodePath, value: &'a Value, rows: &mut Vec<Row<'a>>) {
         let inside = Inside::of(value);
         let fold = match inside {
@@ -173,6 +260,17 @@ impl Tree {
         self.cursor = row;
     }
 
+    /// Puts the cursor on the last row of `document` when it is past it, as after the document
+    /// was read again with fewer fields.
+    pub fn keep_cursor_in(&mut self, document: &FirestoreDocument) {
+        let last = self.rows(document).len().saturating_sub(1);
+        self.cursor = self.cursor.min(last);
+    }
+
+    pub fn cursor_row<'a>(&'a self, document: &'a FirestoreDocument) -> Option<Row<'a>> {
+        self.rows(document).into_iter().nth(self.cursor)
+    }
+
     /// Expands the row under the cursor.
     pub fn expand(&mut self, document: &FirestoreDocument) -> Option<Expansion> {
         match self.at_cursor(document)? {
@@ -189,6 +287,25 @@ impl Tree {
                 Some(Expansion::OpenSubcollection(collection_id))
             }
             AtCursor::Field(..) | AtCursor::Subcollections(_) => None,
+        }
+    }
+
+    /// Expands the row under the cursor, or collapses it when it is expanded. A leaf stays as it
+    /// is.
+    pub fn toggle(&mut self, document: &FirestoreDocument) -> Option<Expansion> {
+        match self.at_cursor(document)? {
+            AtCursor::Field(path, Fold::Expanded) => {
+                self.expanded.remove(&path);
+                None
+            }
+            AtCursor::Subcollections(Fold::Expanded) => {
+                self.subcollections_open = false;
+                None
+            }
+            AtCursor::Field(_, Fold::Leaf) => None,
+            AtCursor::Field(..) | AtCursor::Subcollections(_) | AtCursor::Subcollection(_) => {
+                self.expand(document)
+            }
         }
     }
 
@@ -210,10 +327,10 @@ impl Tree {
     }
 
     fn at_cursor(&self, document: &FirestoreDocument) -> Option<AtCursor> {
-        Some(match self.rows(document).get(self.cursor)? {
-            Row::Field { path, fold, .. } => AtCursor::Field(path.clone(), *fold),
-            Row::Subcollections { fold, .. } => AtCursor::Subcollections(*fold),
-            Row::Subcollection(collection_id) => AtCursor::Subcollection((*collection_id).clone()),
+        Some(match self.cursor_row(document)? {
+            Row::Field { path, fold, .. } => AtCursor::Field(path, fold),
+            Row::Subcollections { fold, .. } => AtCursor::Subcollections(fold),
+            Row::Subcollection(collection_id) => AtCursor::Subcollection(collection_id.clone()),
         })
     }
 
