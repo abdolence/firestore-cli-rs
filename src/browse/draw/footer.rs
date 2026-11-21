@@ -1,7 +1,7 @@
-use super::draw::Viewport;
-use super::editor::FilterEditor;
-use super::state::{Browser, Copied, Failure, FilterTail, BROWSE_DOCUMENT_LIMIT};
-use super::tree::Row;
+use super::Viewport;
+use crate::browse::editor::FilterEditor;
+use crate::browse::state::{Browser, Copied, Failure, FilterTail, BROWSE_DOCUMENT_LIMIT};
+use crate::browse::tree::Row;
 use crate::errors::FsqError;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Stylize;

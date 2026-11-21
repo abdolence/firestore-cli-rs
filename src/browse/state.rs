@@ -16,88 +16,109 @@ use std::fmt::{Display, Formatter};
 pub const BROWSE_DOCUMENT_LIMIT: usize = 100;
 
 /// The end of a `SELECT` after its `FROM`, such as `WHERE …`, `ORDER BY …` and `LIMIT …`, as
-/// typed, without the `;` that ends a statement. An empty one reads the collection as it is.
+/// typed, without the `;` that ends a statement, and what the browser reads from it. An empty one
+/// reads the collection as it is.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct FilterTail(String);
+pub struct FilterTail {
+    text: String,
+    /// The `LIMIT` of the query this filter ends, `None` when it has none.
+    limit: Option<Limit>,
+    /// The field the documents are ordered by first, when the first key of the `ORDER BY` of the
+    /// query is a field path, such as `rating` or `address.city`.
+    order_key: Option<NodePath>,
+}
+
+/// The `LIMIT` of the query a filter ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Limit {
+    Count(usize),
+    /// A limit that is not a number, such as `LIMIT 2 + 3`.
+    Uncounted,
+}
+
+impl Limit {
+    /// The `LIMIT` of `query`. A field named `limit`, the `LIMIT` of a subquery and an `OFFSET`
+    /// alone bound nothing.
+    fn of(query: &Query) -> Option<Self> {
+        let limit = match query.limit_clause.as_ref()? {
+            LimitClause::LimitOffset { limit, .. } => limit.as_ref()?,
+            LimitClause::OffsetCommaLimit { limit, .. } => limit,
+        };
+        Some(match limit {
+            Expr::Value(ValueWithSpan {
+                value: ast::Value::Number(count, _),
+                ..
+            }) => count.parse().map_or(Self::Uncounted, Self::Count),
+            _ => Self::Uncounted,
+        })
+    }
+}
 
 impl FilterTail {
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.text.is_empty()
     }
 
-    /// Whether the query this filter ends has a `LIMIT` count of its own.
+    /// Whether the query this filter ends has a `LIMIT` of its own.
     pub fn has_limit(&self) -> bool {
-        self.limit().is_some()
+        self.limit.is_some()
     }
 
     /// The most documents the query of this filter reads: its own `LIMIT` when that is a number,
     /// else [`BROWSE_DOCUMENT_LIMIT`] when it has none. `None` for a `LIMIT` that is not a number.
     pub fn effective_limit(&self) -> Option<usize> {
-        match self.limit() {
+        match self.limit {
             None => Some(BROWSE_DOCUMENT_LIMIT),
-            Some(Expr::Value(ValueWithSpan {
-                value: ast::Value::Number(count, _),
-                ..
-            })) => count.parse().ok(),
-            Some(_) => None,
+            Some(Limit::Count(count)) => Some(count),
+            Some(Limit::Uncounted) => None,
         }
     }
 
-    /// The field the documents are ordered by first, when the first key of the `ORDER BY` of the
-    /// query is a field path, such as `rating` or `address.city`.
-    pub fn order_key(&self) -> Option<NodePath> {
-        let OrderByKind::Expressions(keys) = self.query()?.order_by?.kind else {
-            return None;
-        };
-        let names = match &keys.first()?.expr {
-            Expr::Identifier(name) => std::slice::from_ref(name),
-            Expr::CompoundIdentifier(names) => names.as_slice(),
-            _ => return None,
-        };
-        Some(
-            names
-                .iter()
-                .fold(NodePath::default(), |path, name| path.field(&name.value)),
-        )
-    }
-
-    /// The `LIMIT` count of the query this filter ends. A field named `limit`, the `LIMIT` of a
-    /// subquery and an `OFFSET` alone bound nothing, and a filter that does not parse has no
-    /// limit.
-    fn limit(&self) -> Option<Expr> {
-        match self.query()?.limit_clause? {
-            LimitClause::LimitOffset { limit, .. } => limit,
-            LimitClause::OffsetCommaLimit { limit, .. } => Some(limit),
-        }
-    }
-
-    /// The query this filter ends, as the parser the firestore crate translates with reads it.
-    /// `None` for a filter that does not parse.
-    fn query(&self) -> Option<Box<Query>> {
-        let statement = format!("SELECT * FROM t\n{}", self.0);
-        let statements = Parser::parse_sql(&BigQueryDialect {}, &statement).ok()?;
-        let [Statement::Query(query)] = <[Statement; 1]>::try_from(statements).ok()? else {
-            return None;
-        };
-        Some(query)
+    pub fn order_key(&self) -> Option<&NodePath> {
+        self.order_key.as_ref()
     }
 }
 
+/// The field path of the first key of the `ORDER BY` of `query`.
+fn first_order_key(query: &Query) -> Option<NodePath> {
+    let OrderByKind::Expressions(keys) = &query.order_by.as_ref()?.kind else {
+        return None;
+    };
+    let names = match &keys.first()?.expr {
+        Expr::Identifier(name) => std::slice::from_ref(name),
+        Expr::CompoundIdentifier(names) => names.as_slice(),
+        _ => return None,
+    };
+    Some(
+        names
+            .iter()
+            .fold(NodePath::default(), |path, name| path.field(&name.value)),
+    )
+}
+
 impl From<&str> for FilterTail {
+    /// The filter `text`, read as the parser the firestore crate translates with reads it. A
+    /// filter that does not parse has no limit and no order key.
     fn from(text: &str) -> Self {
         let text = text.trim();
-        Self(
-            text.strip_suffix(';')
-                .unwrap_or(text)
-                .trim_end()
-                .to_string(),
-        )
+        let text = text.strip_suffix(';').unwrap_or(text).trim_end();
+        let statement = format!("SELECT * FROM t\n{text}");
+        let parsed = Parser::parse_sql(&BigQueryDialect {}, &statement);
+        let query = match parsed.as_deref() {
+            Ok([Statement::Query(query)]) => Some(query.as_ref()),
+            _ => None,
+        };
+        Self {
+            text: text.to_string(),
+            limit: query.and_then(Limit::of),
+            order_key: query.and_then(first_order_key),
+        }
     }
 }
 
 impl Display for FilterTail {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.text)
     }
 }
 
@@ -131,7 +152,7 @@ impl DocumentsQuery {
         // limit.
         if !self.filter.is_empty() {
             sql.push('\n');
-            sql.push_str(&self.filter.0);
+            sql.push_str(&self.filter.text);
         }
         if !self.filter.has_limit() {
             sql.push_str(&format!("\nLIMIT {BROWSE_DOCUMENT_LIMIT}"));
@@ -1364,7 +1385,7 @@ mod tests {
 
     #[test]
     fn the_order_key_is_the_first_field_path_the_documents_are_ordered_by() {
-        let order_key = |filter: &str| FilterTail::from(filter).order_key();
+        let order_key = |filter: &str| FilterTail::from(filter).order_key().cloned();
 
         assert_eq!(
             order_key("WHERE pages > 100 ORDER BY rating DESC, title LIMIT 5"),

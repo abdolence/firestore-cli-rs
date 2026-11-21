@@ -1,3 +1,4 @@
+mod footer;
 mod order;
 mod popup;
 
@@ -20,6 +21,7 @@ use ratatui::widgets::{
     TableState, Wrap,
 };
 use ratatui::Frame;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 /// The narrowest the documents pane gets, which holds a count such as `58/100+` in its title.
@@ -44,6 +46,8 @@ const BROWSE_SCROLL_PADDING: usize = 2;
 /// which has no bar, and shows without colour.
 const SELECTION_MARKER: &str = "▌";
 
+static PLAIN_THEME: LazyLock<Theme> = LazyLock::new(|| Theme::new(false));
+
 /// What the browser keeps from one frame to the next: where each list and the popup are
 /// scrolled to, so that the cursor moves inside the visible rows rather than dragging them
 /// along, how many rows a page of the focused pane or the popup holds, where the line of the
@@ -54,7 +58,7 @@ pub struct Viewport {
     tree: TableState,
     page_rows: usize,
     /// The byte of the filter being edited that its line starts at.
-    pub(super) editor_start: usize,
+    editor_start: usize,
     query_wait: Option<Wait>,
     listing_wait: Option<Wait>,
     /// `None` while no popup shows, so that the next one opens at its top.
@@ -343,14 +347,7 @@ impl Browser {
         if self.focus() == Pane::Tree {
             viewport.page_rows = usize::from(inner.height);
         }
-        let theme = Theme::new(false);
-        let view = View {
-            theme: &theme,
-            format: OutputFormat::Table,
-            expanded: ExpandedMode::Off,
-            width: None,
-            documents_path: self.documents_path(),
-        };
+        let view = self.value_view();
         let columns = TreeColumns::new(document, area.width);
         let gap = rows
             .iter()
@@ -397,6 +394,18 @@ impl Browser {
             (None, Load::Done | Load::Pending { .. }) => return None,
         };
         Some(note)
+    }
+
+    /// How fsq's renderer writes the values of this browser's documents: without colour, which
+    /// the browser adds itself, and with names and references relative to the database.
+    fn value_view(&self) -> View<'_> {
+        View {
+            theme: &PLAIN_THEME,
+            format: OutputFormat::Table,
+            expanded: ExpandedMode::Off,
+            width: None,
+            documents_path: self.documents_path(),
+        }
     }
 
     fn pane_block(&self, pane: Pane, title: Line<'static>) -> Block<'static> {
@@ -503,9 +512,7 @@ impl TreeColumns {
     /// takes at most a third of the pane.
     fn new(document: &FirestoreDocument, pane_width: u16) -> Self {
         let room = usize::from(pane_width).saturating_sub(2 + Span::from(SELECTION_MARKER).width());
-        let widest = Tree::widest_field(document, |depth, name| {
-            RowName::indent_width(depth) + name.width()
-        });
+        let widest = Tree::widest_field(document, RowName::indent_width);
         let name = widest.min(room / 3);
         let types = pane_width >= TREE_PANE_MIN_WIDTH_WITH_TYPES;
         let taken = name

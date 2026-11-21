@@ -75,48 +75,17 @@ impl From<&NodePath> for FieldPath {
 
 impl Display for Segment {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        Name::from(self).fmt(f)
-    }
-}
-
-/// The name of a value as its row shows it, borrowed from the document: a field name, or a
-/// position in an array as `[2]`.
-#[derive(Debug, Clone, Copy)]
-pub enum Name<'a> {
-    Field(&'a str),
-    Index(usize),
-}
-
-impl Name<'_> {
-    /// The columns this name takes on screen.
-    pub fn width(self) -> usize {
-        match self {
-            Self::Field(name) => console::measure_text_width(name),
-            Self::Index(index) => {
-                let digits =
-                    std::iter::successors(Some(index), |rest| (*rest >= 10).then(|| rest / 10));
-                digits.count() + 2
-            }
-        }
-    }
-}
-
-impl<'a> From<&'a Segment> for Name<'a> {
-    fn from(segment: &'a Segment) -> Self {
-        match segment {
-            Segment::Field(name) => Self::Field(name),
-            Segment::Index(index) => Self::Index(*index),
-        }
-    }
-}
-
-impl Display for Name<'_> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Field(name) => f.write_str(name),
             Self::Index(index) => write!(f, "[{index}]"),
         }
     }
+}
+
+/// The columns the name of the element at `index` of an array takes, such as `[12]`.
+fn index_width(index: usize) -> usize {
+    let digits = std::iter::successors(Some(index), |rest| (*rest >= 10).then(|| rest / 10));
+    digits.count() + 2
 }
 
 /// Whether a row has rows inside it, and whether they show.
@@ -206,31 +175,25 @@ impl Tree {
         rows
     }
 
-    /// The most `width` gives for the depth and the name of a value in `document`, over every
+    /// The columns the widest name of a value in `document` takes after its indent, over every
     /// value at any depth: every field row the tree has with each map and array expanded.
-    pub fn widest_field(
-        document: &FirestoreDocument,
-        width: impl Fn(usize, Name<'_>) -> usize,
-    ) -> usize {
-        fn widest_inside(
-            value: &Value,
-            depth: usize,
-            width: &impl Fn(usize, Name<'_>) -> usize,
-        ) -> usize {
-            let widest = |name: Name<'_>, value: &Value| {
-                width(depth, name).max(widest_inside(value, depth + 1, width))
+    /// `indent` gives the columns before a name `depth` levels down.
+    pub fn widest_field(document: &FirestoreDocument, indent: impl Fn(usize) -> usize) -> usize {
+        fn widest_inside(value: &Value, depth: usize, indent: &impl Fn(usize) -> usize) -> usize {
+            let widest = |name_width: usize, value: &Value| {
+                (indent(depth) + name_width).max(widest_inside(value, depth + 1, indent))
             };
             match Inside::of(value) {
                 Some(Inside::Map(map)) => map
                     .fields
                     .iter()
-                    .map(|(name, value)| widest(Name::Field(name), value))
+                    .map(|(name, value)| widest(console::measure_text_width(name), value))
                     .max(),
                 Some(Inside::Array(array)) => array
                     .values
                     .iter()
                     .enumerate()
-                    .map(|(index, value)| widest(Name::Index(index), value))
+                    .map(|(index, value)| widest(index_width(index), value))
                     .max(),
                 None => None,
             }
@@ -239,7 +202,10 @@ impl Tree {
         document
             .fields
             .iter()
-            .map(|(name, value)| width(0, Name::Field(name)).max(widest_inside(value, 1, &width)))
+            .map(|(name, value)| {
+                (indent(0) + console::measure_text_width(name))
+                    .max(widest_inside(value, 1, &indent))
+            })
             .max()
             .unwrap_or_default()
     }

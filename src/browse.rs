@@ -4,7 +4,6 @@
 
 mod draw;
 mod editor;
-mod footer;
 mod matching;
 mod state;
 mod tree;

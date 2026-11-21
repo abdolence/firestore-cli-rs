@@ -1,8 +1,8 @@
+use super::footer::{Hint, Hints};
 use super::{PopupScroll, Viewport};
-use crate::browse::footer::{Hint, Hints};
 use crate::browse::state::{Browser, Popup};
 use crate::field_path::FieldPath;
-use crate::render::{counted, cut_middle, type_name, ExpandedMode, OutputFormat, Theme, View};
+use crate::render::{counted, cut_middle, type_name, View};
 use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
 use firestore::FirestoreVector;
@@ -36,17 +36,10 @@ impl Browser {
         body: Rect,
         viewport: &mut Viewport,
     ) {
-        let theme = Theme::new(false);
-        let view = View {
-            theme: &theme,
-            format: OutputFormat::Table,
-            expanded: ExpandedMode::Off,
-            width: None,
-            documents_path: self.documents_path(),
-        };
+        let view = self.value_view();
         let (title, text) = match popup {
             Popup::Value { path, value } => {
-                let details = [Some(type_name(value).to_string()), size_of(value)];
+                let details = [Some(type_name(value).to_string()), size_detail(value)];
                 let title = PopupTitle {
                     name: FieldPath::from(path).to_string(),
                     details: details.into_iter().flatten().collect(),
@@ -134,7 +127,7 @@ impl PopupTitle {
 }
 
 /// How much `value` holds, for the types whose value does not say it at a glance.
-fn size_of(value: &Value) -> Option<String> {
+fn size_detail(value: &Value) -> Option<String> {
     match &value.value_type {
         Some(ValueType::StringValue(text)) => Some(counted(text.chars().count(), "char", "chars")),
         Some(ValueType::BytesValue(bytes)) => Some(counted(bytes.len(), "byte", "bytes")),

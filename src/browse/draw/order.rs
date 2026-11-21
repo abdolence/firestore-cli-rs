@@ -1,5 +1,4 @@
 use crate::browse::state::Browser;
-use crate::render::{ExpandedMode, OutputFormat, Theme, View};
 use ratatui::style::Stylize;
 use ratatui::text::{Line, Span};
 
@@ -22,14 +21,7 @@ impl OrderColumn {
     pub(super) fn of(browser: &Browser) -> Option<Self> {
         let level = browser.level();
         let key = level.filter().order_key()?;
-        let theme = Theme::new(false);
-        let view = View {
-            theme: &theme,
-            format: OutputFormat::Table,
-            expanded: ExpandedMode::Off,
-            width: None,
-            documents_path: browser.documents_path(),
-        };
+        let view = browser.value_view();
         let values: Vec<Option<String>> = level
             .documents()?
             .iter()
