@@ -405,7 +405,7 @@ books  WHERE pages > 100 LIMIT 100  · 2 documents
 | Tab | switches between the documents and the tree |
 | `/` | edits the filter: Enter runs it, Esc keeps the one before |
 | Esc, Backspace | goes back up from a subcollection to the document it was opened from |
-| Ctrl-C | stops waiting for Firestore, or quits when nothing is loading |
+| Ctrl-C | stops waiting for Firestore; with nothing loading, closes the filter editor; with neither, quits |
 | `q` | quits, and in the REPL returns to the prompt |
 
 * the filter is the end of a `SELECT` after its `FROM`, such as `WHERE`, `ORDER BY`, `LIMIT` and `OFFSET`. fsq runs

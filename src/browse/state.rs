@@ -245,7 +245,8 @@ pub enum Message {
     FilterDelete,
     RunFilter,
     CancelFilter,
-    /// Stops waiting for Firestore, or quits when nothing is pending.
+    /// Ctrl-C, which ends the innermost thing going on: stops waiting for Firestore, else closes
+    /// the filter editor, else quits.
     Interrupt,
     Quit,
     DocumentsLoaded {
@@ -330,7 +331,7 @@ impl Browser {
             }
             Message::RunFilter => return self.run_filter(),
             Message::CancelFilter => self.filter_editor = None,
-            Message::Interrupt => return Some(self.interrupt()),
+            Message::Interrupt => return self.interrupt(),
             Message::Quit => return Some(Effect::Quit),
             Message::DocumentsLoaded { request, outcome } => self.loaded(request, outcome),
             Message::SubcollectionsListed { request, outcome } => {
@@ -429,13 +430,15 @@ impl Browser {
         Some(Effect::Query(query))
     }
 
-    fn interrupt(&mut self) -> Effect {
+    fn interrupt(&mut self) -> Option<Effect> {
         let level = &mut self.current;
         let query_stopped = level.stop_waiting();
         if level.tree.cancel_listing() || query_stopped {
-            Effect::Cancel
-        } else {
-            Effect::Quit
+            return Some(Effect::Cancel);
+        }
+        match self.filter_editor.take() {
+            Some(_) => None,
+            None => Some(Effect::Quit),
         }
     }
 
@@ -701,6 +704,20 @@ mod tests {
             }
         ));
         assert_eq!(browser.level().documents().len(), 2);
+        assert_eq!(browser.update(Message::Interrupt), Some(Effect::Quit));
+    }
+
+    #[test]
+    fn ctrl_c_stops_a_load_then_closes_the_filter_editor_then_quits() {
+        let mut browser = browser();
+        browser.update(Message::EditFilter);
+        query_of(browser.update(Message::RunFilter));
+        browser.update(Message::EditFilter);
+
+        assert_eq!(browser.update(Message::Interrupt), Some(Effect::Cancel));
+        assert!(browser.filter_editor().is_some());
+        assert_eq!(browser.update(Message::Interrupt), None);
+        assert_eq!(browser.filter_editor(), None);
         assert_eq!(browser.update(Message::Interrupt), Some(Effect::Quit));
     }
 
