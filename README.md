@@ -403,7 +403,7 @@ books  WHERE pages > 100 LIMIT 100  · 2 documents
 | →, `l`, Enter | opens the map, array or subcollection under the cursor; in the documents, moves to the tree |
 | ←, `h` | closes the map or array under the cursor, or moves to the one it is in; at the top level of the tree, moves back to the documents |
 | Tab | switches between the documents and the tree |
-| `/` | edits the filter: Enter runs it, Esc keeps the one before |
+| `/` | edits the filter: Enter runs it, Esc keeps the one before. Pasted text goes in as one line |
 | Esc, Backspace | goes back up from a subcollection to the document it was opened from |
 | Ctrl-C | stops waiting for Firestore; with nothing loading, closes the filter editor; with neither, quits |
 | `q` | quits, and in the REPL returns to the prompt |

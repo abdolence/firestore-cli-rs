@@ -11,7 +11,10 @@ use crate::describe::CollectionPath;
 use crate::errors::{is_pipeline_refusal, FsqError, FsqResult};
 use crate::render::ANIMATION_TICK;
 use crate::walk::Walk;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
+    KeyEventKind, KeyModifiers,
+};
 use crossterm::execute;
 use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
 use draw::Viewport;
@@ -83,6 +86,7 @@ async fn browse(db: &FirestoreDb, target: BrowseTarget) -> FsqResult<()> {
                                 break browser.update(message);
                             }
                         }
+                        Event::Paste(text) => break browser.update(Message::Paste(text)),
                         Event::Resize(..) => break None,
                         _ => {}
                     }
@@ -141,7 +145,8 @@ static SCREEN_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// next frame then draws whole.
 static SCREEN_OVERWRITTEN: AtomicBool = AtomicBool::new(false);
 
-/// The terminal in raw mode on the alternate screen, until this is dropped. On a panic in the browser's own task, a panic hook restores the terminal before the
+/// The terminal in raw mode on the alternate screen, with bracketed paste on, until this is
+/// dropped. On a panic in the browser's own task, a panic hook restores the terminal before the
 /// message prints.
 struct Screen {
     terminal: DefaultTerminal,
@@ -180,7 +185,11 @@ impl Screen {
 
     fn init_terminal() -> std::io::Result<DefaultTerminal> {
         enable_raw_mode()?;
-        execute!(std::io::stdout(), EnterAlternateScreen)?;
+        execute!(
+            std::io::stdout(),
+            EnterAlternateScreen,
+            EnableBracketedPaste
+        )?;
         Terminal::new(CrosstermBackend::new(std::io::stdout()))
     }
 
@@ -193,6 +202,9 @@ impl Screen {
     }
 
     fn restore() {
+        // ratatui's restore leaves bracketed paste on. A terminal that cannot take this fails
+        // that restore too, which reports the error.
+        let _ = execute!(std::io::stdout(), DisableBracketedPaste);
         ratatui::restore();
     }
 }

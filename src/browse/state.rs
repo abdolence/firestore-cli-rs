@@ -243,6 +243,9 @@ pub enum Message {
     EditFilter,
     FilterInput(char),
     FilterDelete,
+    /// Text pasted at once, which goes into the filter being edited as one line. With no filter
+    /// being edited it is dropped.
+    Paste(String),
     RunFilter,
     CancelFilter,
     /// Ctrl-C, which ends the innermost thing going on: stops waiting for Firestore, else closes
@@ -327,6 +330,11 @@ impl Browser {
             Message::FilterDelete => {
                 if let Some(text) = &mut self.filter_editor {
                     text.pop();
+                }
+            }
+            Message::Paste(pasted) => {
+                if let Some(text) = &mut self.filter_editor {
+                    text.push_str(&pasted.replace("\r\n", " ").replace(['\r', '\n'], " "));
                 }
             }
             Message::RunFilter => return self.run_filter(),
@@ -719,6 +727,23 @@ mod tests {
         assert_eq!(browser.update(Message::Interrupt), None);
         assert_eq!(browser.filter_editor(), None);
         assert_eq!(browser.update(Message::Interrupt), Some(Effect::Quit));
+    }
+
+    #[test]
+    fn a_paste_goes_into_the_filter_editor_as_one_line() {
+        let mut browser = browser();
+        assert_eq!(browser.update(Message::Paste("q".to_string())), None);
+        assert_eq!(browser.filter_editor(), None);
+
+        browser.update(Message::EditFilter);
+        browser.update(Message::Paste(
+            "WHERE genre = 'sf'\nAND pages > 100\r\nORDER BY title\rLIMIT 5".to_string(),
+        ));
+
+        assert_eq!(
+            browser.filter_editor(),
+            Some("WHERE genre = 'sf' AND pages > 100 ORDER BY title LIMIT 5")
+        );
     }
 
     #[test]
