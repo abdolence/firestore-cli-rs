@@ -2,10 +2,10 @@ use super::tree::{Expansion, Tree};
 use super::BrowseTarget;
 use crate::describe::CollectionPath;
 use crate::errors::{FsqError, FsqResult};
-use crate::tokens::SourceTokens;
 use firestore::{FirestoreCollectionId, FirestoreDb, FirestoreDocument};
-use sqlparser::keywords::Keyword;
-use sqlparser::tokenizer::Token;
+use sqlparser::ast::{LimitClause, Statement};
+use sqlparser::dialect::BigQueryDialect;
+use sqlparser::parser::Parser;
 use std::fmt::{Display, Formatter};
 
 /// How many documents a level shows when its filter has no `LIMIT` of its own.
@@ -21,19 +21,22 @@ impl FilterTail {
         self.0.is_empty()
     }
 
-    /// Whether the text says `LIMIT` outside a string, a quoted name, a comment and the
-    /// parentheses of a subquery, whose `LIMIT` does not bound the documents read.
+    /// Whether the query this filter ends has a `LIMIT` count, as the parser the firestore crate
+    /// translates with reads it. A field named `limit`, the `LIMIT` of a subquery and an `OFFSET`
+    /// alone bound nothing, and a filter that does not parse has no limit.
     pub fn has_limit(&self) -> bool {
-        let mut depth = 0usize;
-        for token in SourceTokens::from(self.0.as_str()).tokens {
-            match token.kind {
-                Token::LParen => depth += 1,
-                Token::RParen => depth = depth.saturating_sub(1),
-                Token::Word(word) if depth == 0 && word.keyword == Keyword::LIMIT => return true,
-                _ => {}
-            }
+        let statement = format!("SELECT * FROM t\n{}", self.0);
+        let Ok(statements) = Parser::parse_sql(&BigQueryDialect {}, &statement) else {
+            return false;
+        };
+        let [Statement::Query(query)] = statements.as_slice() else {
+            return false;
+        };
+        match &query.limit_clause {
+            Some(LimitClause::LimitOffset { limit, .. }) => limit.is_some(),
+            Some(LimitClause::OffsetCommaLimit { .. }) => true,
+            None => false,
         }
-        false
     }
 }
 
@@ -553,6 +556,20 @@ mod tests {
             books("WHERE genre = 'sf' ORDER BY title limit 5").sql(),
             "SELECT * FROM `books`\nWHERE genre = 'sf' ORDER BY title limit 5"
         );
+        assert_eq!(
+            books("ORDER BY title OFFSET 10").sql(),
+            "SELECT * FROM `books`\nORDER BY title OFFSET 10\nLIMIT 100"
+        );
+    }
+
+    #[test]
+    fn a_field_named_limit_is_not_a_limit_of_the_query() {
+        for filter in ["WHERE quota.limit > 5", "WHERE limit > 5", "ORDER BY limit"] {
+            assert_eq!(
+                books(filter).sql(),
+                format!("SELECT * FROM `books`\n{filter}\nLIMIT 100")
+            );
+        }
     }
 
     #[test]
