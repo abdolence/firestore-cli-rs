@@ -403,109 +403,39 @@ books  WHERE pages > 100 LIMIT 100
 ↑↓ move · → open · Tab pane · / filter · f where · y copy        ? help · q quit
 ```
 
-In the documents and the tree:
+The essential keys; `?` lists the rest:
 
 | Key | What it does |
 |---|---|
 | ↑ and ↓, `k` and `j` | moves the cursor |
-| Page Up and Page Down, Ctrl-U and Ctrl-D | moves the cursor a page, or half a page |
-| `g` and `G`, Home and End | moves the cursor to the first or the last row |
 | →, `l` | opens the map, array or subcollection under the cursor; in the documents, moves to the tree |
-| Enter | shows the value under the cursor whole in a popup, a box over the panes that takes every key until Esc closes it. A closed map or array opens as with →, and shows whole on the next Enter |
-| Space | opens the map, array or subcollections under the cursor, or closes them when they are open |
-| ←, `h` | closes the map or array under the cursor, or moves to the one it is in; at the top level of the tree, moves back to the documents; in the documents, goes back up as Esc does |
+| Enter | shows the value under the cursor whole in a popup, a box over the panes that Esc closes |
+| ←, `h` | closes the map or array under the cursor, or moves up a level |
 | Tab | switches between the documents and the tree |
-| `/` | edits the filter on the bottom line, in place of the keys |
-| `f` | opens the filter editor with `WHERE <path> = <value>` for the leaf under the cursor, a string, number, boolean, null or timestamp. On any other value it does nothing |
-| `y`, `Y` | copies the value under the cursor, or its path as the bottom border shows it, to the clipboard over OSC 52, an escape sequence that asks the terminal to set its clipboard |
-| `r` | reads the documents again with the filter they were read with, and keeps the selected document and its tree |
-| Esc, Backspace | goes back up from a subcollection to the document it was opened from |
-| Ctrl-G | shows the whole error of a failed filter or listing in a popup |
+| `/` | edits the filter; ↑ and ↓ recall the filters that ran, Enter runs it and Esc closes the editor |
+| `f` | opens the filter editor with `WHERE <path> = <value>` for the leaf under the cursor |
+| `y`, `Y` | copies the value under the cursor, or its path, to the clipboard |
+| `r` | reads the documents again |
+| `q` | quits, and in the REPL returns to the prompt; Ctrl-C does the same when nothing is loading and nothing is open |
 | `?` | lists every key in a popup |
-| Ctrl-C | stops waiting for Firestore; with nothing loading, closes the popup or the filter editor; with neither, quits |
-| `q` | quits, and in the REPL returns to the prompt |
-
-In the filter editor, every character key types into the filter, `g`, `r`, `f`, `y` and `?` too:
-
-| Key | What it does |
-|---|---|
-| ← and →, Home, End | moves the cursor |
-| ↑ and ↓ | recalls an earlier filter that ran, or a later one; past the most recent, the text being typed comes back |
-| Backspace, Delete | deletes the character before the cursor, or the one after it |
-| Ctrl-W, Ctrl-U | deletes the word before the cursor, or everything before it |
-| Enter | runs the filter |
-| Esc | closes the editor and keeps the filter before |
-| Ctrl-G | shows the whole error of the filter that failed in a popup |
-
-In a popup:
-
-| Key | What it does |
-|---|---|
-| ↑ and ↓, `k` and `j`, Page Up and Page Down, Ctrl-U and Ctrl-D | scrolls by a line, a page or half a page |
-| `g` and `G`, Home and End | scrolls to the start or the end |
-| `y`, `Y` | copies the value, or its path, to the clipboard |
-| Esc | closes the popup |
-
-Pasted text goes into the editor as one line, and a filter longer than the line scrolls to keep the cursor in view.
-
-```
-┌ blurb · string · 60 chars ────────────────┐
-│A desert planet, a spice that extends life,│
-│and a duke's son                           │
-└ Esc close ────────────────────────────────┘
-```
 
 * the filter is the end of a `SELECT` after its `FROM`, such as `WHERE`, `ORDER BY`, `LIMIT` and `OFFSET`. fsq runs
   ``SELECT * FROM `<collection>` `` with the filter after it, and adds `LIMIT 100` when the filter has no `LIMIT` of its
-  own, as the header and the editor show in dim;
+  own;
 * in the REPL the rest of the line after the collection is the filter, kept as typed, so a string in it needs no extra
   quoting, and `--filter` is not a flag there. `fsq browse` takes it with `--filter`. A `;` at the end of the filter is
   dropped;
-* the header shows the path down to the collection, then the filter the documents on screen were read with, cut in the
-  middle when it is longer than the line;
-* the documents pane is as wide as the longest document ID, at least 12 columns and at most 35% of the terminal. An ID
-  longer than that is cut in the middle, with a `…` in place of what is left out;
-* with an `ORDER BY` on a field path, the documents pane shows the value of its first key after each ID, dim, such as
-  `dune   4.5` for `ORDER BY rating DESC`, and widens for it within the same limits. A pane too narrow for the longest
-  ID and a few columns of the value leaves the values out;
-* the title of the documents shows the position of the cursor and the count, such as `58/100`, with a `+` when the
-  count is the limit, so more documents may exist. While the browser waits for Firestore, the title shows a spinner
-  and the seconds waited, and after Ctrl-C it shows `stopped`. A narrow pane leaves out the word `documents` first;
-* the tree has a column of names, one of types and one of values. The names column is as wide as the longest field
-  name of the whole document, at any depth, and at most a third of the pane, so the values stay in place when a map
-  opens and when the next document has the same fields. A tree narrower than 50 columns leaves out the types. A name
-  is cut in the middle and a value at its end, each with a `…`, and Enter shows the value whole;
-* an open map or array has no summary on its own row, since its fields show on the rows under it, and a null shows as
-  `NULL` with no type;
-* the bottom border of the tree shows the path of the row under the cursor, as SQL reads it: `address.city`,
-  `tags[0]`, `` `location` `` for a name SQL reserves, and the collection path on a subcollection;
-* moving to another document keeps the maps and arrays open, and the cursor on the same path, or on the nearest path
-  around it that the document has, so one field can be compared across documents. A new filter, and a subcollection
-  opened, start with the tree closed;
+* a filter typed in the editor that fails reopens in the editor with its error under it, and the documents read before
+  it stay. A read that fails otherwise, such as the first read of a collection, `r` or a subcollection opened, does not
+  open the editor, and its error shows under the keys at the bottom. Ctrl-G shows any error whole, and `/` opens the
+  filter that failed again;
+* the last row of the tree is `subcollections`. Opening it lists the collections under the document, and opening one
+  of them browses it without a filter. Esc returns to the document as it was left;
 * `y` copies a string as its text, and any other value as one line of JSON in the tagged encoding `fsq export` writes,
-  such as `{"$timestamp":"2023-11-14T22:13:20Z"}`. The copy goes through the terminal, so it also works over SSH.
-  Some terminals need OSC 52 turned on, and tmux needs `set -g set-clipboard on`. The bottom line notes `copied value`
-  or `copied path` until the next key;
-* `f` quotes a string with backslash escapes, and writes a null as `IS NULL` and a timestamp as
-  `UNIX_MICROS_TO_TIMESTAMP(…)`, since the firestore crate translates no `TIMESTAMP '…'` literal. The editor opens with
-  the filter, and Enter runs it;
-* the editor recalls the filters that ran and answered, the most recent first, for as long as fsq runs, so every
-  `\browse` of a REPL session recalls the filters of the ones before it. A filter that failed is not kept;
-* the popup of a value has its path, its type and its size in the title. A string wraps at words, a map or an array
-  shows as indented JSON-like text, and bytes show in hexadecimal after the offset of each line;
-* a filter that does not parse, or that Firestore refuses, stays in the editor with its error under it, and the
-  documents read before it stay under their own filter. Esc closes the editor, and `/` opens the filter that failed
-  again. In the error, the filter is line 2 of the statement. An error longer than four lines ends in `…`, and Ctrl-G
-  shows it whole;
-* an empty result says so in place of the tree. Firestore answers a path that holds no documents the same way as a
-  mistyped one;
-* the last row of the tree is `subcollections`, a line apart from the fields and in italics, since a document can
-  have a field of that name. Opening it lists the collections under the document, and opening one of them browses it
-  without a filter. A listing that fails shows its error under the keys. Esc returns to the document as it was left;
-* the cursor is a bar in the terminal's own colours, and the selected row of each pane starts with a `▌`, so the pane
-  without the focus shows its selection too;
-* with `NO_COLOR` set, the browser draws without colours, and keeps bold, dim and reverse video, so the cursor still
-  shows;
+  such as `{"$timestamp":"2023-11-14T22:13:20Z"}`. `Y` copies the path as SQL reads it, such as `address.city` or
+  `tags[0]`. The copy goes to the clipboard over OSC 52, an escape sequence that asks the terminal to set its clipboard,
+  so it also works over SSH. Some terminals need OSC 52 turned on, and tmux needs `set -g set-clipboard on`;
+* with `NO_COLOR` set, the browser draws without colours;
 * the browser needs a terminal on stdin and stdout, so `\browse` in piped input, or with stdout sent to a pipe or a
   file, fails with an error. In `fsq -e` and `fsq -f` at a terminal, `\browse` opens the browser, and the script goes
   on after it quits.
