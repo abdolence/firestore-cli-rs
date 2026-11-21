@@ -12,11 +12,16 @@ use crate::errors::{is_pipeline_refusal, FsqError, FsqResult};
 use crate::walk::Walk;
 use draw::Viewport;
 use firestore::{FirestoreDb, FirestoreDocument};
+use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::DefaultTerminal;
+use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
+use ratatui::{DefaultTerminal, Terminal};
 pub use state::FilterTail;
 use state::{Browser, DocumentsQuery, Effect, Message, Movement, BROWSE_DOCUMENT_LIMIT};
 use std::io::IsTerminal;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Once;
 use std::time::Duration;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::AbortHandle;
@@ -73,7 +78,6 @@ pub async fn run(connection: &Connection, target: BrowseTarget) -> FsqResult<()>
     }
 }
 
-/// The next key pressed within [`BROWSE_KEY_WAIT`].
 fn next_key() -> std::io::Result<Option<KeyEvent>> {
     if !event::poll(BROWSE_KEY_WAIT)? {
         return Ok(None);
@@ -118,26 +122,51 @@ fn message_for(key: KeyEvent, editing_filter: bool, page_rows: usize) -> Option<
     Some(message)
 }
 
-/// The terminal in raw mode on the alternate screen, until this is dropped. On a panic, ratatui's
-/// panic hook restores it before the message prints.
+/// Whether a [`Screen`] holds the terminal, which is what tells the panic hook that there is
+/// something to restore.
+static SCREEN_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// The terminal in raw mode on the alternate screen, until this is dropped. On a panic while it
+/// is held, a panic hook restores the terminal before the message prints.
 struct Screen {
     terminal: DefaultTerminal,
 }
 
 impl Screen {
     fn enter() -> FsqResult<Self> {
-        match ratatui::try_init() {
+        static PANIC_HOOK: Once = Once::new();
+        // One hook for the life of the process: a hook added per `\browse` would stack up, and
+        // every later panic would restore the terminal once for each of them.
+        PANIC_HOOK.call_once(|| {
+            let previous = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                if SCREEN_ACTIVE.swap(false, Ordering::SeqCst) {
+                    ratatui::restore();
+                }
+                previous(info);
+            }));
+        });
+        SCREEN_ACTIVE.store(true, Ordering::SeqCst);
+        match Self::init_terminal() {
             Ok(terminal) => Ok(Self { terminal }),
             Err(error) => {
+                SCREEN_ACTIVE.store(false, Ordering::SeqCst);
                 ratatui::restore();
                 Err(error.into())
             }
         }
     }
+
+    fn init_terminal() -> std::io::Result<DefaultTerminal> {
+        enable_raw_mode()?;
+        execute!(std::io::stdout(), EnterAlternateScreen)?;
+        Terminal::new(CrosstermBackend::new(std::io::stdout()))
+    }
 }
 
 impl Drop for Screen {
     fn drop(&mut self) {
+        SCREEN_ACTIVE.store(false, Ordering::SeqCst);
         ratatui::restore();
     }
 }
@@ -201,7 +230,6 @@ impl Calls {
         }
     }
 
-    /// The answers that have arrived since the last call.
     fn answers(&mut self) -> impl Iterator<Item = Message> + '_ {
         std::iter::from_fn(|| self.receiver.try_recv().ok())
     }

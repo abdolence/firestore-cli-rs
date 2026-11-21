@@ -80,7 +80,7 @@ impl Browser {
         }
         let documents = counted(level.documents().len(), "document", "documents");
         spans.push(Span::from(format!("  · {documents}")).dim());
-        if matches!(level.load(), Load::Pending(_)) {
+        if matches!(level.load(), Load::Pending { .. }) {
             spans.push(Span::from("  · loading…").yellow());
         }
         Line::from(spans)
@@ -94,8 +94,8 @@ impl Browser {
         }
         if level.documents().is_empty() {
             let empty = match level.load() {
-                Load::Pending(_) => "loading…",
-                Load::Done | Load::Failed(_) => "no documents",
+                Load::Pending { .. } => "loading…",
+                Load::Done | Load::Failed { .. } => "no documents",
             };
             frame.render_widget(Paragraph::new(empty).dim().block(block), area);
             return;
@@ -185,8 +185,8 @@ impl Browser {
             });
         }
         let error = match self.level().load() {
-            Load::Failed(error) => error.to_string(),
-            Load::Done | Load::Pending(_) => return None,
+            Load::Failed { error, .. } => error.to_string(),
+            Load::Done | Load::Pending { .. } => return None,
         };
         let text = format!("error: {error}");
         let lines: usize = text
@@ -221,14 +221,13 @@ impl Browser {
         if self.has_parent() {
             hints.push("Esc back");
         }
-        if matches!(self.level().load(), Load::Pending(_)) {
+        if matches!(self.level().load(), Load::Pending { .. }) {
             hints.push("Ctrl-C stops waiting");
         }
         hints.push("q quits");
         hints.join(" · ")
     }
 
-    /// The frame of `pane`, in colour while it has the focus.
     fn pane_block(&self, pane: Pane, title: String) -> Block<'static> {
         let border = if self.focus() == pane {
             Style::new().cyan()
@@ -275,7 +274,7 @@ impl TreeLine {
                     path.last().map(ToString::to_string).unwrap_or_default()
                 ),
                 type_name: type_name(value),
-                value: view.compact_value(value),
+                value: view.leaf_value(value),
                 value_style: value_style(value),
             },
             Row::Subcollections { listing, fold } => {
@@ -315,7 +314,6 @@ impl Fold {
     }
 }
 
-/// The ID of `document`, the last segment of its name.
 fn document_id(document: &FirestoreDocument) -> &str {
     document.name.rsplit('/').next().unwrap_or_default()
 }
@@ -339,8 +337,8 @@ fn value_style(value: &Value) -> Style {
 mod tests {
     use super::*;
     use crate::browse::state::{Effect, Message, Movement};
-    use crate::browse::BrowseTarget;
-    use crate::render::fixtures::{draft, dune, DOCUMENTS_PATH};
+    use crate::browse::{BrowseTarget, FilterTail};
+    use crate::render::fixtures::{document, draft, dune, string, DOCUMENTS_PATH};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -385,5 +383,36 @@ mod tests {
         assert!(line_with("London").contains("city"));
         assert!(line_with("▸ tags").contains("[2 items]"));
         line_with("▸ subcollections");
+    }
+
+    #[test]
+    fn a_string_longer_than_a_table_cell_shows_whole_in_a_wide_pane() {
+        let note = format!("start-{}-end", "x".repeat(90));
+        let target = BrowseTarget {
+            collection: "books".parse().expect("a collection path"),
+            filter: FilterTail::default(),
+        };
+        let (mut browser, Effect::Query(query)) = Browser::open(target, DOCUMENTS_PATH) else {
+            panic!("no query")
+        };
+        browser.update(Message::DocumentsLoaded {
+            request: query.request,
+            outcome: Ok(vec![document("noted", vec![("note", string(&note))])]),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(200, 12)).expect("a test terminal");
+
+        terminal
+            .draw(|frame| browser.draw(frame, &mut Viewport::default()))
+            .expect("a frame");
+
+        let buffer = terminal.backend().buffer();
+        let drawn: Vec<String> = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect();
+        assert!(drawn.iter().any(|line| line.contains(&note)));
     }
 }

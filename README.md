@@ -410,9 +410,11 @@ books  WHERE pages > 100 LIMIT 100  · 2 documents
   ``SELECT * FROM `<collection>` `` with the filter after it, and adds `LIMIT 100` when the filter has no `LIMIT` of its
   own, as the header shows;
 * in the REPL the rest of the line after the collection is the filter, kept as typed, so a string in it needs no extra
-  quoting. `fsq browse` takes it with `--filter`;
-* a filter that does not parse, or that Firestore refuses, shows its error at the bottom, and the documents read
-  before it stay. In the error, the filter is line 2 of the statement;
+  quoting, and `--filter` is not a flag there. `fsq browse` takes it with `--filter`. A `;` at the end of the filter is
+  dropped;
+* the header names the filter the documents on screen were read with. A filter that does not parse, or that Firestore
+  refuses, shows its error at the bottom, and the documents read before it stay under their own filter. `/` opens the
+  filter that failed, so that it can be corrected. In the error, the filter is line 2 of the statement;
 * the last row of the tree is `subcollections`. Opening it lists the collections under the document, and opening one
   of them browses it without a filter. Esc returns to the document as it was left;
 * the browser needs a terminal on stdin and stdout, so a script or piped input that reaches `\browse` fails with an

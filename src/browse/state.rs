@@ -12,7 +12,7 @@ use std::fmt::{Display, Formatter};
 pub const BROWSE_DOCUMENT_LIMIT: usize = 100;
 
 /// The end of a `SELECT` after its `FROM`, such as `WHERE …`, `ORDER BY …` and `LIMIT …`, as
-/// typed. An empty one reads the collection as it is.
+/// typed, without the `;` that ends a statement. An empty one reads the collection as it is.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FilterTail(String);
 
@@ -21,18 +21,31 @@ impl FilterTail {
         self.0.is_empty()
     }
 
-    /// Whether the text says `LIMIT` outside a string, a quoted name or a comment.
+    /// Whether the text says `LIMIT` outside a string, a quoted name, a comment and the
+    /// parentheses of a subquery, whose `LIMIT` does not bound the documents read.
     pub fn has_limit(&self) -> bool {
-        SourceTokens::from(self.0.as_str())
-            .tokens
-            .iter()
-            .any(|token| matches!(&token.kind, Token::Word(word) if word.keyword == Keyword::LIMIT))
+        let mut depth = 0usize;
+        for token in SourceTokens::from(self.0.as_str()).tokens {
+            match token.kind {
+                Token::LParen => depth += 1,
+                Token::RParen => depth = depth.saturating_sub(1),
+                Token::Word(word) if depth == 0 && word.keyword == Keyword::LIMIT => return true,
+                _ => {}
+            }
+        }
+        false
     }
 }
 
 impl From<&str> for FilterTail {
     fn from(text: &str) -> Self {
-        Self(text.trim().to_string())
+        let text = text.trim();
+        Self(
+            text.strip_suffix(';')
+                .unwrap_or(text)
+                .trim_end()
+                .to_string(),
+        )
     }
 }
 
@@ -81,55 +94,77 @@ impl DocumentsQuery {
     }
 }
 
-/// Where a level's documents stand.
 #[derive(Debug)]
 pub enum Load {
     Done,
-    Pending(RequestId),
-    /// The last query failed, and the documents before it stay.
-    Failed(FsqError),
+    Pending {
+        request: RequestId,
+        filter: FilterTail,
+    },
+    /// The query of `filter` failed, and the documents before it stay.
+    Failed {
+        error: FsqError,
+        filter: FilterTail,
+    },
 }
 
 /// One collection on the way down from the collection the browser opened.
 #[derive(Debug)]
 pub struct Level {
     path: CollectionPath,
+    /// The filter the documents were read with. A filter that is still running or failed is in
+    /// [`Load`] instead, so that this one never names documents it did not read.
     filter: FilterTail,
     documents: Vec<FirestoreDocument>,
     /// The position of the selected document, 0 when there are none.
     selected: usize,
-    /// The tree of the selected document.
     tree: Tree,
     load: Load,
 }
 
 impl Level {
+    /// A level that has read nothing yet, so that it names the filter it is reading with.
     fn loading(path: CollectionPath, filter: FilterTail, request: RequestId) -> Self {
+        let pending = Load::Pending {
+            request,
+            filter: filter.clone(),
+        };
         Self {
             path,
             filter,
             documents: Vec::new(),
             selected: 0,
             tree: Tree::default(),
-            load: Load::Pending(request),
+            load: pending,
         }
     }
 
     /// Stops waiting for the pending query, if there is one: the documents before it stay, and
     /// the query counts as interrupted. `false` when no query was pending.
     fn stop_waiting(&mut self) -> bool {
-        if !matches!(self.load, Load::Pending(_)) {
+        let Load::Pending { filter, .. } = std::mem::replace(&mut self.load, Load::Done) else {
             return false;
-        }
-        self.load = Load::Failed(FsqError::Interrupted);
+        };
+        self.load = Load::Failed {
+            error: FsqError::Interrupted,
+            filter,
+        };
         true
     }
 
-    fn query(&self, request: RequestId) -> DocumentsQuery {
+    fn query(&self, request: RequestId, filter: FilterTail) -> DocumentsQuery {
         DocumentsQuery {
             request,
             collection: self.path.clone(),
-            filter: self.filter.clone(),
+            filter,
+        }
+    }
+
+    /// The filter the next edit starts from: the one that last ran, whether or not it answered.
+    fn filter_to_edit(&self) -> &FilterTail {
+        match &self.load {
+            Load::Pending { filter, .. } | Load::Failed { filter, .. } => filter,
+            Load::Done => &self.filter,
         }
     }
 
@@ -253,7 +288,7 @@ impl Browser {
     pub fn open(target: BrowseTarget, documents_path: &str) -> (Self, Effect) {
         let request = RequestId::default().following();
         let current = Level::loading(target.collection, target.filter, request);
-        let query = current.query(request);
+        let query = current.query(request, current.filter.clone());
         let browser = Self {
             current,
             parents: Vec::new(),
@@ -277,7 +312,9 @@ impl Browser {
                 }
             }
             Message::Back => return self.back(),
-            Message::EditFilter => self.filter_editor = Some(self.current.filter.to_string()),
+            Message::EditFilter => {
+                self.filter_editor = Some(self.current.filter_to_edit().to_string())
+            }
             Message::FilterInput(typed) => {
                 if let Some(text) = &mut self.filter_editor {
                     text.push(typed);
@@ -353,7 +390,7 @@ impl Browser {
     fn go_down(&mut self, path: CollectionPath) -> Effect {
         let request = self.next_request();
         let level = Level::loading(path, FilterTail::default(), request);
-        let query = level.query(request);
+        let query = level.query(request, FilterTail::default());
         self.current.stop_waiting();
         self.parents
             .push(std::mem::replace(&mut self.current, level));
@@ -383,9 +420,10 @@ impl Browser {
         let text = self.filter_editor.take()?;
         let request = self.next_request();
         let level = &mut self.current;
-        level.filter = FilterTail::from(text.as_str());
-        level.load = Load::Pending(request);
-        Some(Effect::Query(level.query(request)))
+        let filter = FilterTail::from(text.as_str());
+        let query = level.query(request, filter.clone());
+        level.load = Load::Pending { request, filter };
+        Some(Effect::Query(query))
     }
 
     fn interrupt(&mut self) -> Effect {
@@ -400,17 +438,20 @@ impl Browser {
 
     fn loaded(&mut self, request: RequestId, outcome: FsqResult<Vec<FirestoreDocument>>) {
         let level = &mut self.current;
-        if !matches!(level.load, Load::Pending(pending) if pending == request) {
+        if !matches!(&level.load, Load::Pending { request: pending, .. } if *pending == request) {
             return;
         }
+        let Load::Pending { filter, .. } = std::mem::replace(&mut level.load, Load::Done) else {
+            return;
+        };
         match outcome {
             Ok(documents) => {
                 level.documents = documents;
+                level.filter = filter;
                 level.selected = 0;
                 level.tree = Tree::default();
-                level.load = Load::Done;
             }
-            Err(error) => level.load = Load::Failed(error),
+            Err(error) => level.load = Load::Failed { error, filter },
         }
     }
 
@@ -515,6 +556,28 @@ mod tests {
     }
 
     #[test]
+    fn a_filter_ends_without_the_semicolon_that_ends_the_statement() {
+        assert_eq!(
+            books("WHERE genre = 'sf';").sql(),
+            "SELECT * FROM `books`\nWHERE genre = 'sf'\nLIMIT 100"
+        );
+        assert_eq!(
+            books("WHERE genre = 'sf' LIMIT 5 ;").sql(),
+            "SELECT * FROM `books`\nWHERE genre = 'sf' LIMIT 5"
+        );
+    }
+
+    #[test]
+    fn a_limit_inside_parentheses_is_not_the_limit_of_the_query() {
+        let filter = "WHERE EXISTS(SELECT * FROM subcollection('orders') LIMIT 1)";
+
+        assert_eq!(
+            books(filter).sql(),
+            format!("SELECT * FROM `books`\n{filter}\nLIMIT 100")
+        );
+    }
+
+    #[test]
     fn a_subcollection_is_read_by_its_full_quoted_path() {
         let mut browser = browser();
 
@@ -556,9 +619,44 @@ mod tests {
         assert_eq!(query.filter, FilterTail::from("WHERE"));
         assert!(matches!(
             browser.level().load(),
-            Load::Failed(FsqError::NoProject)
+            Load::Failed {
+                error: FsqError::NoProject,
+                ..
+            }
         ));
         assert_eq!(browser.level().documents().len(), 2);
+    }
+
+    #[test]
+    fn the_filter_of_the_documents_shown_changes_only_when_the_new_one_has_answered() {
+        let mut browser = browser();
+        let type_filter = |browser: &mut Browser, text: &str| {
+            browser.update(Message::EditFilter);
+            for typed in text.chars() {
+                browser.update(Message::FilterInput(typed));
+            }
+            query_of(browser.update(Message::RunFilter))
+        };
+
+        let failing = type_filter(&mut browser, "WHERE genre = 'fantasy'");
+        assert_eq!(browser.level().filter(), &FilterTail::default());
+        browser.update(Message::DocumentsLoaded {
+            request: failing.request,
+            outcome: Err(FsqError::NoProject),
+        });
+        assert_eq!(browser.level().filter(), &FilterTail::default());
+
+        browser.update(Message::EditFilter);
+        assert_eq!(browser.filter_editor(), Some("WHERE genre = 'fantasy'"));
+        let query = query_of(browser.update(Message::RunFilter));
+        browser.update(Message::DocumentsLoaded {
+            request: query.request,
+            outcome: Ok(vec![dune()]),
+        });
+        assert_eq!(
+            browser.level().filter(),
+            &FilterTail::from("WHERE genre = 'fantasy'")
+        );
     }
 
     #[test]
@@ -575,7 +673,10 @@ mod tests {
 
         assert!(matches!(
             browser.level().load(),
-            Load::Failed(FsqError::Interrupted)
+            Load::Failed {
+                error: FsqError::Interrupted,
+                ..
+            }
         ));
         assert_eq!(browser.level().documents().len(), 2);
         assert_eq!(browser.update(Message::Interrupt), Some(Effect::Quit));

@@ -43,6 +43,17 @@ impl View<'_> {
         }
     }
 
+    /// A leaf of a tree on one line, a string uncut, for a pane that cuts at its own edge. Maps and
+    /// arrays stay in their compact form.
+    pub fn leaf_value(&self, value: &Value) -> String {
+        match &value.value_type {
+            Some(ValueType::StringValue(text)) => {
+                self.theme.string.apply_to(single_line(text)).to_string()
+            }
+            _ => self.compact_value(value),
+        }
+    }
+
     pub fn pretty_value(&self, value: &Value) -> String {
         let mut out = String::new();
         match &value.value_type {

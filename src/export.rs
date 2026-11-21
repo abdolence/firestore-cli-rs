@@ -233,8 +233,8 @@ impl TryFrom<&ExportArgs> for ExportSource {
         }
         match path.parent() {
             None => Ok(Self::Group(path.collection_id().clone())),
-            Some(parent) => Err(FsqError::InvalidCollectionPath(InvalidCollectionPath {
-                path: format!("{parent}/{}", path.collection_id()),
+            Some(_) => Err(FsqError::InvalidCollectionPath(InvalidCollectionPath {
+                path: path.to_string(),
                 reason: "a collection group is named by a collection ID, without a parent path",
             })),
         }

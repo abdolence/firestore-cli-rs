@@ -158,6 +158,16 @@ impl FromStr for MetaCommand {
                         "a collection path",
                     ));
                 }
+                if let Some(flag) = filter.strip_prefix("--filter") {
+                    if flag.is_empty() || flag.starts_with(|c: char| c.is_whitespace() || c == '=')
+                    {
+                        return Err(FsqError::invalid_meta_argument(
+                            "\\browse",
+                            "--filter",
+                            "the filter as the rest of the line, without a flag",
+                        ));
+                    }
+                }
                 Self::Browse(BrowseTarget {
                     collection: collection.parse()?,
                     filter: filter.into(),
@@ -439,6 +449,25 @@ mod tests {
                 filter: FilterTail::default(),
             })
         );
+    }
+
+    #[test]
+    fn browse_refuses_the_filter_flag_of_the_command_line() {
+        for line in [
+            "\\browse books --filter \"WHERE pages > 100\"",
+            "\\browse books --filter=\"WHERE pages > 100\"",
+        ] {
+            assert!(
+                matches!(
+                    line.parse::<MetaCommand>(),
+                    Err(FsqError::InvalidMetaArgument(InvalidMetaArgument {
+                        command: "\\browse",
+                        ..
+                    }))
+                ),
+                "{line}"
+            );
+        }
     }
 
     #[test]
