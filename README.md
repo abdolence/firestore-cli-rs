@@ -378,6 +378,8 @@ fsq -p my-project -d my-database browse books --filter 'WHERE pages > 100'
 collection on the left, and the fields of the selected document on the right as a tree, where a map or an array opens
 to show what it holds, at any depth.
 
+![fsq-browse](media/fsq-browse.webp)
+
 ```
 books  WHERE pages > 100 LIMIT 100  · 2 documents
 ┌ documents ───────────┐┌ books/dune ──────────────────────────────────────────┐
