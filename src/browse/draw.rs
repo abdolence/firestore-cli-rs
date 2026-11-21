@@ -392,7 +392,9 @@ impl Browser {
             (None, Load::Stopped { .. }) => {
                 "stopped before the first answer · / edits the filter".to_string()
             }
-            (None, Load::Failed { .. }) => "the query failed · / edits the filter".to_string(),
+            (None, Load::Failed { .. }) => {
+                "the query failed · / edits the filter · r reads again".to_string()
+            }
             (None, Load::Done | Load::Pending { .. }) => return None,
         };
         Some(note)
