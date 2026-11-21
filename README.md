@@ -381,8 +381,8 @@ to show what it holds, at any depth.
 ![fsq-browse](media/fsq-browse.webp)
 
 ```
-books  WHERE pages > 100 LIMIT 100  · 2 documents
-┌ documents ───────────┐┌ books/dune ──────────────────────────────────────────┐
+books  WHERE pages > 100 LIMIT 100
+┌ documents 2/2 ───────┐┌ dune ────────────────────────────────────────────────┐
 │draft                 ││▾ address        map       {city, zip}                │
 │dune                  ││    city         string    London                     │
 │                      ││    zip          string    N1 9GU                     │
@@ -394,7 +394,7 @@ books  WHERE pages > 100 LIMIT 100  · 2 documents
 │                      ││  title          string    Dune                       │
 │                      ││▸ subcollections                                      │
 └──────────────────────┘└──────────────────────────────────────────────────────┘
-↑↓ move · → open · ← close · Tab switches pane · / filter · q quits
+↑↓ move · → open · Tab pane · / filter                                    q quit
 ```
 
 | Key | What it does |
@@ -403,22 +403,44 @@ books  WHERE pages > 100 LIMIT 100  · 2 documents
 | →, `l`, Enter | opens the map, array or subcollection under the cursor; in the documents, moves to the tree |
 | ←, `h` | closes the map or array under the cursor, or moves to the one it is in; at the top level of the tree, moves back to the documents |
 | Tab | switches between the documents and the tree |
-| `/` | edits the filter: Enter runs it, Esc keeps the one before. Pasted text goes in as one line |
+| `/` | edits the filter on the bottom line, in place of the keys |
 | Esc, Backspace | goes back up from a subcollection to the document it was opened from |
 | Ctrl-C | stops waiting for Firestore; with nothing loading, closes the filter editor; with neither, quits |
 | `q` | quits, and in the REPL returns to the prompt |
 
+In the filter editor:
+
+| Key | What it does |
+|---|---|
+| ← and →, Home, End | moves the cursor |
+| Backspace, Delete | deletes the character before the cursor, or the one after it |
+| Ctrl-W, Ctrl-U | deletes the word before the cursor, or everything before it |
+| Enter | runs the filter |
+| Esc | closes the editor and keeps the filter before |
+
+Pasted text goes into the editor as one line, and a filter longer than the line scrolls to keep the cursor in view.
+
 * the filter is the end of a `SELECT` after its `FROM`, such as `WHERE`, `ORDER BY`, `LIMIT` and `OFFSET`. fsq runs
   ``SELECT * FROM `<collection>` `` with the filter after it, and adds `LIMIT 100` when the filter has no `LIMIT` of its
-  own, as the header shows;
+  own, as the header and the editor show in dim;
 * in the REPL the rest of the line after the collection is the filter, kept as typed, so a string in it needs no extra
   quoting, and `--filter` is not a flag there. `fsq browse` takes it with `--filter`. A `;` at the end of the filter is
   dropped;
-* the header names the filter the documents on screen were read with. A filter that does not parse, or that Firestore
-  refuses, shows its error at the bottom, and the documents read before it stay under their own filter. `/` opens the
-  filter that failed, so that it can be corrected. In the error, the filter is line 2 of the statement;
+* the header shows the path down to the collection, then the filter the documents on screen were read with, cut in the
+  middle when it is longer than the line;
+* the title of the documents shows the position of the cursor and the count, such as `58/100`, with a `+` when the
+  count is the limit, so more documents may exist. While the browser waits for Firestore, the title shows a spinner
+  and the seconds waited, and after Ctrl-C it shows `stopped`;
+* a filter that does not parse, or that Firestore refuses, stays in the editor with its error under it, and the
+  documents read before it stay under their own filter. Esc closes the editor, and `/` opens the filter that failed
+  again. In the error, the filter is line 2 of the statement;
+* an empty result says so in place of the tree. Firestore answers a path that holds no documents the same way as a
+  mistyped one;
 * the last row of the tree is `subcollections`. Opening it lists the collections under the document, and opening one
-  of them browses it without a filter. Esc returns to the document as it was left;
+  of them browses it without a filter. A listing that fails shows its error under the keys. Esc returns to the
+  document as it was left;
+* with `NO_COLOR` set, the browser draws without colours, and keeps bold, dim and reverse video, so the cursor still
+  shows;
 * the browser needs a terminal on stdin and stdout, so `\browse` in piped input, or with stdout sent to a pipe or a
   file, fails with an error. In `fsq -e` and `fsq -f` at a terminal, `\browse` opens the browser, and the script goes
   on after it quits.
