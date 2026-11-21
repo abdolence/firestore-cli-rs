@@ -20,6 +20,8 @@ crate, which translates SQL into Firestore pipelines.
   `firestore.indexes.json`, the file of the Firebase CLI;
 * **Collections and fields:** `\l` lists the collections, and `\d` lists the field paths of a collection with their
   types, how often they are present and an example value;
+* **Collection browser:** `fsq browse` and `\browse` show the documents of a collection full screen, open maps, arrays
+  and subcollections with the cursor, and filter the documents with the end of a `SELECT`;
 * **Fluent Rust code:** `fsq codegen` and `\gen` show the code of the firestore crate's fluent API for a `SELECT`, with
   a row struct typed from sample rows;
 * **Export and import:** documents as JSON lines, in an encoding that reads back to the same Firestore types;
@@ -128,6 +130,7 @@ A statement ends with `;` and can span several lines. A line that starts with `\
 |---|---|
 | `\l [--recursive [--depth N] [--sample K]]` | lists the collections under the root, as `SHOW COLLECTIONS` does; with `--recursive` also the subcollections, see [Listing subcollections](#listing-subcollections) |
 | `\d <collection> [--sample N]` | lists the field paths of a collection, see [Describing a collection](#describing-a-collection) |
+| `\browse <collection> [filter]` | browses the documents of a collection full screen, see [Browsing a collection](#browsing-a-collection) |
 | `\x [on\|off\|auto\|full [N]]` | switches the expanded view, without an argument toggles it; `full` shows every field of every document, and `full N` row N of the last result, see [Results](#results) |
 | `\c <database>` | connects to another database of the project |
 | `\timing [on\|off]` | adds the round trip time and the execution stats to the footer |
@@ -364,6 +367,59 @@ my-project/my-database (enterprise)> \d books
 ╰──────────────┴──────────────┴─────────┴──────────────────────╯
 10 field paths · 753 ms · from a sample of 3 documents
 ```
+
+## Browsing a collection
+
+```sh
+fsq -p my-project -d my-database browse books --filter 'WHERE pages > 100'
+```
+
+`\browse books WHERE pages > 100` in the REPL opens the same browser. It takes the whole terminal: the documents of the
+collection on the left, and the fields of the selected document on the right as a tree, where a map or an array opens
+to show what it holds, at any depth.
+
+```
+books  WHERE pages > 100 LIMIT 100  · 2 documents
+┌ documents ───────────┐┌ books/dune ──────────────────────────────────────────┐
+│draft                 ││▾ address        map       {city, zip}                │
+│dune                  ││    city         string    London                     │
+│                      ││    zip          string    N1 9GU                     │
+│                      ││  author         reference authors/herbert            │
+│                      ││  pages          integer   412                        │
+│                      ││  published      timestamp 2023-11-14T22:13:20Z       │
+│                      ││  rating         double    4.5                        │
+│                      ││▸ tags           array     [2 items]                  │
+│                      ││  title          string    Dune                       │
+│                      ││▸ subcollections                                      │
+└──────────────────────┘└──────────────────────────────────────────────────────┘
+↑↓ move · → open · ← close · Tab switches pane · / filter · q quits
+```
+
+| Key | What it does |
+|---|---|
+| ↑ and ↓, `k` and `j`, Page Up, Page Down, Home, End | moves the cursor |
+| →, `l`, Enter | opens the map, array or subcollection under the cursor; in the documents, moves to the tree |
+| ←, `h` | closes the map or array under the cursor, or moves to the one it is in; at the top level of the tree, moves back to the documents |
+| Tab | switches between the documents and the tree |
+| `/` | edits the filter: Enter runs it, Esc keeps the one before |
+| Esc, Backspace | goes back up from a subcollection to the document it was opened from |
+| Ctrl-C | stops waiting for Firestore, or quits when nothing is loading |
+| `q` | quits, and in the REPL returns to the prompt |
+
+* the filter is the end of a `SELECT` after its `FROM`, such as `WHERE`, `ORDER BY`, `LIMIT` and `OFFSET`. fsq runs
+  ``SELECT * FROM `<collection>` `` with the filter after it, and adds `LIMIT 100` when the filter has no `LIMIT` of its
+  own, as the header shows;
+* in the REPL the rest of the line after the collection is the filter, kept as typed, so a string in it needs no extra
+  quoting. `fsq browse` takes it with `--filter`;
+* a filter that does not parse, or that Firestore refuses, shows its error at the bottom, and the documents read
+  before it stay. In the error, the filter is line 2 of the statement;
+* the last row of the tree is `subcollections`. Opening it lists the collections under the document, and opening one
+  of them browses it without a filter. Esc returns to the document as it was left;
+* the browser needs a terminal on stdin and stdout, so a script or piped input that reaches `\browse` fails with an
+  error.
+
+The filter runs as a pipeline, which needs an Enterprise edition database. On a Standard edition database, which
+refuses pipelines, the browser without a filter shows the first 100 documents by ID, and a filter shows the refusal.
 
 ## Fluent Rust code
 
