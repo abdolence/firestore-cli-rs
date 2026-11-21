@@ -5,6 +5,7 @@
 mod draw;
 mod editor;
 mod footer;
+mod matching;
 mod state;
 mod tree;
 
@@ -13,6 +14,7 @@ use crate::describe::CollectionPath;
 use crate::errors::{is_pipeline_refusal, FsqError, FsqResult};
 use crate::render::ANIMATION_TICK;
 use crate::walk::Walk;
+use crossterm::clipboard::CopyToClipboard;
 use crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
     KeyEventKind, KeyModifiers,
@@ -20,17 +22,19 @@ use crossterm::event::{
 use crossterm::execute;
 use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
 use draw::Viewport;
-use editor::Edit;
+pub use editor::FilterHistory;
+use editor::{Edit, Recall};
 use firestore::{FirestoreCollectionId, FirestoreDb, FirestoreDocument, FirestoreSqlOptions};
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::{DefaultTerminal, Terminal};
 pub use state::FilterTail;
 use state::{
-    Browser, DocumentsQuery, Effect, Message, Mode, Movement, RequestId, BROWSE_DOCUMENT_LIMIT,
+    Browser, Copied, DocumentsQuery, Effect, Message, Mode, Movement, RequestId,
+    BROWSE_DOCUMENT_LIMIT,
 };
 use std::future::Future;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 use std::time::Instant;
@@ -50,19 +54,29 @@ pub struct BrowseTarget {
     pub filter: FilterTail,
 }
 
-/// Browses `target` until the user quits. Fails before it draws anything when stdin or stdout is
-/// not a terminal.
-pub async fn run(connection: &Connection, target: BrowseTarget) -> FsqResult<()> {
+/// Browses `target` until the user quits, with the filters of `history` to recall, and adds the
+/// filters that ran to it. Fails before it draws anything when stdin or stdout is not a terminal.
+pub async fn run(
+    connection: &Connection,
+    target: BrowseTarget,
+    history: &mut FilterHistory,
+) -> FsqResult<()> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(FsqError::BrowseNeedsTerminal);
     }
-    BROWSER_TASK.scope((), browse(&connection.db, target)).await
+    let db = &connection.db;
+    let (mut browser, first_query) =
+        Browser::open(target, db.get_documents_path(), std::mem::take(history));
+    let browsed = BROWSER_TASK
+        .scope((), browse(db, &mut browser, first_query))
+        .await;
+    *history = browser.into_history();
+    browsed
 }
 
 /// Draws after every key, message and resize, and every [`ANIMATION_TICK`] while the browser waits
 /// for Firestore. In between it sleeps.
-async fn browse(db: &FirestoreDb, target: BrowseTarget) -> FsqResult<()> {
-    let (mut browser, first_query) = Browser::open(target, db.get_documents_path());
+async fn browse(db: &FirestoreDb, browser: &mut Browser, first_query: Effect) -> FsqResult<()> {
     let mut calls = Calls::default();
     let mut screen = Screen::enter()?;
     let mut events = EventStream::new();
@@ -74,18 +88,19 @@ async fn browse(db: &FirestoreDb, target: BrowseTarget) -> FsqResult<()> {
             Some(Effect::ListSubcollections { request, document }) => {
                 calls.list_subcollections(db, request, document)
             }
+            Some(Effect::Copy { text, .. }) => screen.copy(&text)?,
             Some(Effect::Cancel) => calls.cancel(),
             Some(Effect::Quit) => return Ok(()),
             None => {}
         }
-        screen.draw(&browser, &mut viewport)?;
+        screen.draw(browser, &mut viewport)?;
         effect = loop {
             tokio::select! {
                 answer = calls.answer() => break browser.update(answer),
                 event = events.next() => {
                     match event.unwrap_or_else(|| Err(std::io::ErrorKind::UnexpectedEof.into()))? {
                         Event::Key(key) if key.kind == KeyEventKind::Press => {
-                            break pressed(&mut browser, &mut viewport, key);
+                            break pressed(browser, &mut viewport, key);
                         }
                         Event::Paste(text) => break browser.update(Message::Paste(text)),
                         Event::Resize(..) => break None,
@@ -99,20 +114,25 @@ async fn browse(db: &FirestoreDb, target: BrowseTarget) -> FsqResult<()> {
 }
 
 /// Takes `key`: while a popup is open, a move scrolls its text, and any other key goes to the
-/// browser as the message it stands for.
+/// browser as the message it stands for. The note of a copy shows until the next key.
 fn pressed(browser: &mut Browser, viewport: &mut Viewport, key: KeyEvent) -> Option<Effect> {
+    viewport.copied = None;
     let mode = browser.mode();
     let page_rows = viewport.page_rows();
     if let (Mode::Popup, Some(movement)) = (mode, movement_for(key, page_rows)) {
         viewport.scroll_popup(movement);
         return None;
     }
-    browser.update(message_for(key, mode, page_rows)?)
+    let effect = browser.update(message_for(key, mode, page_rows)?);
+    if let Some(Effect::Copy { copied, .. }) = &effect {
+        viewport.copied = Some(*copied);
+    }
+    effect
 }
 
 /// What `key` asks of the browser in `mode`: while the filter is being edited, a typed character
-/// goes into it, and a popup takes no key but Esc and Ctrl-C. Raw mode delivers Ctrl-C as a key
-/// rather than a signal.
+/// goes into it, and a popup takes no key but Esc, Ctrl-C, and `y` and `Y`, which copy. Raw mode
+/// delivers Ctrl-C as a key rather than a signal.
 fn message_for(key: KeyEvent, mode: Mode, page_rows: usize) -> Option<Message> {
     let control = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
@@ -123,7 +143,12 @@ fn message_for(key: KeyEvent, mode: Mode, page_rows: usize) -> Option<Message> {
         _ => {}
     }
     match mode {
-        Mode::Popup => (key.code == KeyCode::Esc).then_some(Message::ClosePopup),
+        Mode::Popup => match key.code {
+            KeyCode::Esc => Some(Message::ClosePopup),
+            KeyCode::Char('y') => Some(Message::Copy(Copied::Value)),
+            KeyCode::Char('Y') => Some(Message::Copy(Copied::Path)),
+            _ => None,
+        },
         Mode::FilterEditor => filter_message_for(key, control),
         Mode::Panes => pane_message_for(key, page_rows),
     }
@@ -133,6 +158,8 @@ fn filter_message_for(key: KeyEvent, control: bool) -> Option<Message> {
     let edit = match key.code {
         KeyCode::Enter => return Some(Message::RunFilter),
         KeyCode::Esc => return Some(Message::CancelFilter),
+        KeyCode::Up => return Some(Message::Recall(Recall::Older)),
+        KeyCode::Down => return Some(Message::Recall(Recall::Newer)),
         KeyCode::Char('w') if control => Edit::DeleteWordBefore,
         KeyCode::Char('u') if control => Edit::DeleteToStart,
         KeyCode::Char(typed) if !control => Edit::Insert(typed),
@@ -158,6 +185,9 @@ fn pane_message_for(key: KeyEvent, page_rows: usize) -> Option<Message> {
         KeyCode::Left | KeyCode::Char('h') => Message::Collapse,
         KeyCode::Tab | KeyCode::BackTab => Message::SwitchPane,
         KeyCode::Char('/') => Message::EditFilter,
+        KeyCode::Char('f') => Message::FilterOnValue,
+        KeyCode::Char('y') => Message::Copy(Copied::Value),
+        KeyCode::Char('Y') => Message::Copy(Copied::Path),
         KeyCode::Char('r') => Message::Reload,
         KeyCode::Char('?') => Message::ShowHelp,
         KeyCode::Esc | KeyCode::Backspace => Message::Back,
@@ -272,6 +302,11 @@ impl Screen {
         Ok(())
     }
 
+    /// Puts `text` on the terminal's clipboard, between two frames.
+    fn copy(&mut self, text: &str) -> std::io::Result<()> {
+        write_clipboard(self.terminal.backend_mut(), text)
+    }
+
     fn restore() {
         // ratatui's restore leaves bracketed paste on. A terminal that cannot take this fails
         // that restore too, which reports the error.
@@ -286,6 +321,13 @@ impl Drop for Screen {
             Self::restore();
         }
     }
+}
+
+/// Writes OSC 52, the escape sequence that asks the terminal to put `text` on the system
+/// clipboard. It reaches the clipboard of the machine the terminal runs on, also over SSH, where
+/// the terminal allows it.
+fn write_clipboard(out: &mut impl Write, text: &str) -> std::io::Result<()> {
+    execute!(out, CopyToClipboard::to_clipboard_from(text))
 }
 
 /// The Firestore calls the browser waits for. A query replaces the query before it, and a
@@ -406,7 +448,9 @@ mod tests {
             collection: "books".parse().expect("a collection path"),
             filter: FilterTail::default(),
         };
-        let (mut browser, Effect::Query(query)) = Browser::open(target, DOCUMENTS_PATH) else {
+        let (mut browser, Effect::Query(query)) =
+            Browser::open(target, DOCUMENTS_PATH, FilterHistory::default())
+        else {
             panic!("no query")
         };
         browser.update(Message::DocumentsLoaded {
@@ -564,7 +608,7 @@ mod tests {
         let (mut browser, mut viewport) = browser_of(vec![draft(), dune()]);
         press(&mut browser, &mut viewport, KeyCode::Char('/'));
 
-        for typed in ['g', 'G', ' ', 'r', '?', 'q', 'j', 'l'] {
+        for typed in ['g', 'G', ' ', 'r', '?', 'q', 'j', 'l', 'y', 'Y', 'f'] {
             assert_eq!(
                 press(&mut browser, &mut viewport, KeyCode::Char(typed)),
                 None
@@ -573,10 +617,88 @@ mod tests {
 
         assert_eq!(
             browser.filter_editor().map(|editor| editor.text()),
-            Some("gG r?qjl")
+            Some("gG r?qjlyYf")
         );
         assert_eq!(selected(&browser), 0);
         assert!(browser.popup().is_none());
+    }
+
+    /// What `effect` writes to the terminal to put its text on the clipboard.
+    fn written_to_clipboard(effect: Option<Effect>) -> Vec<u8> {
+        let Some(Effect::Copy { text, .. }) = effect else {
+            panic!("no copy: {effect:?}")
+        };
+        let mut written = Vec::new();
+        write_clipboard(&mut written, &text).expect("a write to memory");
+        written
+    }
+
+    /// The OSC 52 sequence that puts the text encoded as `base64` on the clipboard.
+    fn osc_52(base64: &str) -> Vec<u8> {
+        format!("\x1b]52;c;{base64}\x1b\\").into_bytes()
+    }
+
+    #[test]
+    fn y_copies_a_map_as_tagged_json_and_a_string_as_its_text_over_osc_52() {
+        let (mut browser, mut viewport) = browser_of(vec![dune()]);
+        assert_eq!(press(&mut browser, &mut viewport, KeyCode::Char('y')), None);
+        press(&mut browser, &mut viewport, KeyCode::Tab);
+
+        let address = press(&mut browser, &mut viewport, KeyCode::Char('y'));
+        press(&mut browser, &mut viewport, KeyCode::Right);
+        press(&mut browser, &mut viewport, KeyCode::Down);
+        let city = press(&mut browser, &mut viewport, KeyCode::Char('y'));
+
+        // {"city":"London","zip":"N1 9GU"} and London
+        assert_eq!(
+            written_to_clipboard(address),
+            osc_52("eyJjaXR5IjoiTG9uZG9uIiwiemlwIjoiTjEgOUdVIn0=")
+        );
+        assert_eq!(written_to_clipboard(city), osc_52("TG9uZG9u"));
+    }
+
+    #[test]
+    fn shift_y_copies_the_path_the_tree_border_shows_and_the_popup_copies_too() {
+        let (mut browser, mut viewport) = browser_of(vec![dune()]);
+        press(&mut browser, &mut viewport, KeyCode::Tab);
+        press(&mut browser, &mut viewport, KeyCode::Right);
+        press(&mut browser, &mut viewport, KeyCode::Down);
+        let city = press(&mut browser, &mut viewport, KeyCode::Char('Y'));
+        press(&mut browser, &mut viewport, KeyCode::Up);
+        press(&mut browser, &mut viewport, KeyCode::Left);
+        press(&mut browser, &mut viewport, KeyCode::Down);
+        press(&mut browser, &mut viewport, KeyCode::Down);
+        press(&mut browser, &mut viewport, KeyCode::Enter);
+        let popup_path = press(&mut browser, &mut viewport, KeyCode::Char('Y'));
+        let popup_value = press(&mut browser, &mut viewport, KeyCode::Char('y'));
+
+        // address.city, blurb, and the blurb with its line break
+        assert_eq!(written_to_clipboard(city), osc_52("YWRkcmVzcy5jaXR5"));
+        assert_eq!(written_to_clipboard(popup_path), osc_52("Ymx1cmI="));
+        assert_eq!(
+            written_to_clipboard(popup_value),
+            osc_52(
+                "QSBkZXNlcnQgcGxhbmV0LCBhIHNwaWNlIHRoYXQgZXh0ZW5kcyBsaWZlLAphbmQgYSBkdWtlJ3Mgc29u"
+            )
+        );
+    }
+
+    #[test]
+    fn f_opens_the_editor_with_a_where_on_a_leaf_and_does_nothing_on_a_map() {
+        let (mut browser, mut viewport) = browser_of(vec![dune()]);
+        press(&mut browser, &mut viewport, KeyCode::Tab);
+
+        press(&mut browser, &mut viewport, KeyCode::Char('f'));
+        assert!(browser.filter_editor().is_none());
+        for _ in 0..6 {
+            press(&mut browser, &mut viewport, KeyCode::Down);
+        }
+        press(&mut browser, &mut viewport, KeyCode::Char('f'));
+
+        assert_eq!(
+            browser.filter_editor().map(|editor| editor.text()),
+            Some("WHERE pages = 412")
+        );
     }
 
     async fn panicking_query() -> FsqResult<Vec<FirestoreDocument>> {
@@ -589,7 +711,9 @@ mod tests {
             collection: "books".parse().expect("a collection path"),
             filter: FilterTail::default(),
         };
-        let (mut browser, Effect::Query(query)) = Browser::open(target, DOCUMENTS_PATH) else {
+        let (mut browser, Effect::Query(query)) =
+            Browser::open(target, DOCUMENTS_PATH, FilterHistory::default())
+        else {
             panic!("no query")
         };
         let mut calls = Calls {

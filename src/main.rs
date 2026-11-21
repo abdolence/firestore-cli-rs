@@ -112,7 +112,7 @@ async fn run(args: CliArgs) -> FsqResult<()> {
         }
         CliCommand::Browse(target) => {
             let connection = connect(args.project, args.database, args.format).await?;
-            browse::run(&connection, target).await
+            browse::run(&connection, target, &mut browse::FilterHistory::default()).await
         }
         CliCommand::Codegen(codegen_args) => {
             let options = &codegen_args.options;

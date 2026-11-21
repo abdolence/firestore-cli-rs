@@ -1,7 +1,7 @@
 use super::draw::Viewport;
 use super::editor::FilterEditor;
-use super::state::{Browser, Failure, FilterTail, Load, BROWSE_DOCUMENT_LIMIT};
-use super::tree::Listing;
+use super::state::{Browser, Copied, Failure, FilterTail, Load, BROWSE_DOCUMENT_LIMIT};
+use super::tree::{Listing, Row};
 use crate::errors::FsqError;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Stylize;
@@ -20,8 +20,9 @@ const FILTER_PLACEHOLDER: &str = "WHERE … ORDER BY … LIMIT …";
 const HINT_SEPARATOR: &str = " · ";
 
 impl Browser {
-    /// Draws the filter editor while it is open, else the keys. A popup over the panes keeps its
-    /// own keys, and only the stop of a load shows here, beside an editor without its cursor.
+    /// Draws the filter editor while it is open, else the keys after the note of a copy. A popup
+    /// over the panes keeps its own keys, and only the stop of a load shows here, beside an
+    /// editor without its cursor.
     pub(super) fn draw_footer(&self, frame: &mut Frame, area: Rect, viewport: &mut Viewport) {
         match (self.filter_editor(), self.popup()) {
             (Some(editor), popup) => {
@@ -35,37 +36,46 @@ impl Browser {
                 }
             }
             (None, Some(_)) => {
+                let mut hints = Vec::new();
                 if self.is_waiting() {
-                    frame.render_widget(Hints(vec![Hint::new("Ctrl-C", "stop", 0)]).line(), area);
+                    hints.push(Hint::new("Ctrl-C", "stop", 0));
                 }
+                let width = usize::from(area.width);
+                frame.render_widget(Hints(hints).after_note(viewport.copied, width), area);
             }
-            (None, None) => self.draw_key_hints(frame, area),
+            (None, None) => self.draw_key_hints(frame, area, viewport.copied),
         }
     }
 
-    fn draw_key_hints(&self, frame: &mut Frame, area: Rect) {
+    fn draw_key_hints(&self, frame: &mut Frame, area: Rect, copied: Option<Copied>) {
         let mut hints = vec![
             Hint::new("↑↓", "move", 1),
-            Hint::new("→", "open", 3),
-            Hint::new("Tab", "pane", 2),
-            Hint::new("/", "filter", 4),
+            Hint::new("→", "open", 5),
+            Hint::new("Tab", "pane", 4),
+            Hint::new("/", "filter", 6),
         ];
+        if self.filter_on_cursor().is_some() {
+            hints.push(Hint::new("f", "where", 3));
+        }
+        if matches!(self.tree_cursor(), Some((_, Row::Field { .. }))) {
+            hints.push(Hint::new("y", "copy", 2));
+        }
         if self.has_parent() {
-            hints.push(Hint::new("Esc", "back", 5));
+            hints.push(Hint::new("Esc", "back", 7));
         }
         if self.failure().is_some() {
-            hints.push(Hint::new("Ctrl-G", "error", 7));
+            hints.push(Hint::new("Ctrl-G", "error", 9));
         }
         if self.is_waiting() {
-            hints.push(Hint::new("Ctrl-C", "stop", 6));
+            hints.push(Hint::new("Ctrl-C", "stop", 8));
         }
         let pinned = Hints(vec![Hint::new("?", "help", 0), Hint::new("q", "quit", 0)]);
         let [left, right] =
             Layout::horizontal([Constraint::Fill(1), Constraint::Length(pinned.columns())])
                 .spacing(2)
                 .areas(area);
-        let hints = Hints(hints).fitted(usize::from(left.width));
-        frame.render_widget(hints.line(), left);
+        let hints = Hints(hints).after_note(copied, usize::from(left.width));
+        frame.render_widget(hints, left);
         frame.render_widget(pinned.line(), right);
     }
 
@@ -205,6 +215,26 @@ impl Hints {
 
     fn columns(&self) -> u16 {
         u16::try_from(self.width()).unwrap_or(u16::MAX)
+    }
+
+    /// These hints fitted to `width` columns after the note of what the last key `copied`, if it
+    /// copied anything. The note is never dropped.
+    fn after_note(self, copied: Option<Copied>, width: usize) -> Line<'static> {
+        let Some(copied) = copied else {
+            return self.fitted(width).line();
+        };
+        let note = match copied {
+            Copied::Value => "copied value",
+            Copied::Path => "copied path",
+        };
+        let separator = Span::from(HINT_SEPARATOR).dim();
+        let hints = self.fitted(width.saturating_sub(Span::from(note).width() + separator.width()));
+        let mut spans = vec![Span::from(note).dim()];
+        if !hints.0.is_empty() {
+            spans.push(separator);
+        }
+        spans.extend(hints.line().spans);
+        Line::from(spans)
     }
 
     pub(super) fn line(&self) -> Line<'static> {

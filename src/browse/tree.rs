@@ -19,7 +19,9 @@ pub enum Segment {
 }
 
 impl NodePath {
-    fn field(&self, name: &str) -> Self {
+    /// The field `name` of the map this path names, or a top-level field of the document when
+    /// this is the empty path.
+    pub fn field(&self, name: &str) -> Self {
         let mut segments = self.0.clone();
         segments.push(Segment::Field(name.to_string()));
         Self(segments)
@@ -39,6 +41,24 @@ impl NodePath {
     /// How many maps and arrays the value is inside: 0 for a top-level field.
     pub fn depth(&self) -> usize {
         self.0.len().saturating_sub(1)
+    }
+
+    /// The value this path names in `document`, `None` where the document has none there.
+    pub fn value_in<'a>(&self, document: &'a FirestoreDocument) -> Option<&'a Value> {
+        let (Segment::Field(name), inside) = self.0.split_first()? else {
+            return None;
+        };
+        inside
+            .iter()
+            .try_fold(document.fields.get(name)?, |value, segment| {
+                match (segment, &value.value_type) {
+                    (Segment::Field(name), Some(ValueType::MapValue(map))) => map.fields.get(name),
+                    (Segment::Index(index), Some(ValueType::ArrayValue(array))) => {
+                        array.values.get(*index)
+                    }
+                    _ => None,
+                }
+            })
     }
 }
 
@@ -265,6 +285,29 @@ impl Tree {
     pub fn keep_cursor_in(&mut self, document: &FirestoreDocument) {
         let last = self.rows(document).len().saturating_sub(1);
         self.cursor = self.cursor.min(last);
+    }
+
+    /// Moves this tree from `from` to `to`, another document, so that one field can be compared
+    /// across documents: the maps and arrays open in `from` stay open, and the cursor goes to the
+    /// row of the same path, else of the nearest path around it that `to` has, else to the first
+    /// row. The subcollections listed are those of `from`, so their group closes.
+    pub fn switch_document(&mut self, from: &FirestoreDocument, to: &FirestoreDocument) {
+        let at_cursor = self.at_cursor(from);
+        self.subcollections_open = false;
+        self.listing = Listing::NotListed;
+        let rows = self.rows(to);
+        let cursor = match at_cursor {
+            Some(AtCursor::Field(path, _)) => (1..=path.0.len()).rev().find_map(|len| {
+                let around = NodePath(path.0[..len].to_vec());
+                rows.iter()
+                    .position(|row| matches!(row, Row::Field { path, .. } if *path == around))
+            }),
+            Some(AtCursor::Subcollections(_) | AtCursor::Subcollection(_)) => rows
+                .iter()
+                .position(|row| matches!(row, Row::Subcollections { .. })),
+            None => None,
+        };
+        self.cursor = cursor.unwrap_or_default();
     }
 
     pub fn cursor_row<'a>(&'a self, document: &'a FirestoreDocument) -> Option<Row<'a>> {

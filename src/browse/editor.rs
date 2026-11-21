@@ -16,13 +16,80 @@ pub enum Edit {
     End,
 }
 
+/// The most filters a [`FilterHistory`] keeps.
+const FILTER_HISTORY_LIMIT: usize = 100;
+
+/// The filters that ran and answered, the most recent last. It lasts for the process, so that
+/// every browser of one REPL session recalls the filters of the browsers before it.
+#[derive(Debug, Default)]
+pub struct FilterHistory(Vec<FilterTail>);
+
+impl FilterHistory {
+    /// Keeps `filter` as the most recent, once: a filter that ran before moves up from where it
+    /// was. An empty filter is not kept, since it recalls nothing.
+    pub fn add(&mut self, filter: &FilterTail) {
+        if filter.is_empty() {
+            return;
+        }
+        self.0.retain(|kept| kept != filter);
+        self.0.push(filter.clone());
+        if self.0.len() > FILTER_HISTORY_LIMIT {
+            self.0.remove(0);
+        }
+    }
+}
+
+/// A step through the [`FilterHistory`] from the filter editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Recall {
+    Older,
+    Newer,
+}
+
 /// The text of a filter being edited and the cursor in it.
 #[derive(Debug)]
 pub struct FilterEditor {
     line: LineBuffer,
+    /// `None` until a filter is recalled from the history.
+    recalled: Option<Recalled>,
+}
+
+/// A filter of the history in the editor, and the text that was being typed before it.
+#[derive(Debug)]
+struct Recalled {
+    /// How far back the filter is: 0 for the most recent.
+    back: usize,
+    draft: String,
 }
 
 impl FilterEditor {
+    /// Replaces the text with the filter that ran before the one shown, or after it. Past the
+    /// most recent filter, the text that was being typed before the first recall comes back.
+    pub fn recall(&mut self, recall: Recall, history: &FilterHistory) {
+        let Some(oldest) = history.0.len().checked_sub(1) else {
+            return;
+        };
+        let back = match (self.recalled.as_ref().map(|recalled| recalled.back), recall) {
+            (None, Recall::Older) => Some(0),
+            (None, Recall::Newer) => return,
+            (Some(back), Recall::Older) => Some((back + 1).min(oldest)),
+            (Some(back), Recall::Newer) => back.checked_sub(1),
+        };
+        let draft = match self.recalled.take() {
+            Some(recalled) => recalled.draft,
+            None => self.text().to_string(),
+        };
+        let text = match back {
+            Some(back) => {
+                let filter = history.0[oldest - back].to_string();
+                self.recalled = Some(Recalled { back, draft });
+                filter
+            }
+            None => draft,
+        };
+        self.line = LineBuffer::from(text.as_str());
+    }
+
     pub fn apply(&mut self, edit: Edit) {
         match edit {
             Edit::Insert(typed) => self.line.insert_char(typed),
@@ -158,6 +225,7 @@ impl From<&FilterTail> for FilterEditor {
     fn from(filter: &FilterTail) -> Self {
         Self {
             line: LineBuffer::from(filter.to_string().as_str()),
+            recalled: None,
         }
     }
 }

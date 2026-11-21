@@ -1,11 +1,13 @@
-use super::editor::{Edit, FilterEditor};
+use super::editor::{Edit, FilterEditor, FilterHistory, Recall};
 use super::tree::{Expansion, Fold, Listing, NodePath, Row, Tree};
 use super::BrowseTarget;
 use crate::describe::CollectionPath;
 use crate::errors::{FsqError, FsqResult};
+use crate::field_path::FieldPath;
+use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
-use firestore::{FirestoreCollectionId, FirestoreDb, FirestoreDocument};
-use sqlparser::ast::{self, Expr, LimitClause, Statement, ValueWithSpan};
+use firestore::{FirestoreCollectionId, FirestoreDb, FirestoreDocument, FirestoreJsonEncoding};
+use sqlparser::ast::{self, Expr, LimitClause, OrderByKind, Query, Statement, ValueWithSpan};
 use sqlparser::dialect::BigQueryDialect;
 use sqlparser::parser::Parser;
 use std::fmt::{Display, Formatter};
@@ -41,20 +43,43 @@ impl FilterTail {
         }
     }
 
-    /// The `LIMIT` count of the query this filter ends, as the parser the firestore crate
-    /// translates with reads it. A field named `limit`, the `LIMIT` of a subquery and an `OFFSET`
-    /// alone bound nothing, and a filter that does not parse has no limit.
-    fn limit(&self) -> Option<Expr> {
-        let statement = format!("SELECT * FROM t\n{}", self.0);
-        let statements = Parser::parse_sql(&BigQueryDialect {}, &statement).ok()?;
-        let [Statement::Query(query)] = statements.as_slice() else {
+    /// The field the documents are ordered by first, when the first key of the `ORDER BY` of the
+    /// query is a field path, such as `rating` or `address.city`.
+    pub fn order_key(&self) -> Option<NodePath> {
+        let OrderByKind::Expressions(keys) = self.query()?.order_by?.kind else {
             return None;
         };
-        match &query.limit_clause {
-            Some(LimitClause::LimitOffset { limit, .. }) => limit.clone(),
-            Some(LimitClause::OffsetCommaLimit { limit, .. }) => Some(limit.clone()),
-            None => None,
+        let names = match &keys.first()?.expr {
+            Expr::Identifier(name) => std::slice::from_ref(name),
+            Expr::CompoundIdentifier(names) => names.as_slice(),
+            _ => return None,
+        };
+        Some(
+            names
+                .iter()
+                .fold(NodePath::default(), |path, name| path.field(&name.value)),
+        )
+    }
+
+    /// The `LIMIT` count of the query this filter ends. A field named `limit`, the `LIMIT` of a
+    /// subquery and an `OFFSET` alone bound nothing, and a filter that does not parse has no
+    /// limit.
+    fn limit(&self) -> Option<Expr> {
+        match self.query()?.limit_clause? {
+            LimitClause::LimitOffset { limit, .. } => limit,
+            LimitClause::OffsetCommaLimit { limit, .. } => Some(limit),
         }
+    }
+
+    /// The query this filter ends, as the parser the firestore crate translates with reads it.
+    /// `None` for a filter that does not parse.
+    fn query(&self) -> Option<Box<Query>> {
+        let statement = format!("SELECT * FROM t\n{}", self.0);
+        let statements = Parser::parse_sql(&BigQueryDialect {}, &statement).ok()?;
+        let [Statement::Query(query)] = <[Statement; 1]>::try_from(statements).ok()? else {
+            return None;
+        };
+        Some(query)
     }
 }
 
@@ -278,6 +303,14 @@ pub enum Failure {
     Listing,
 }
 
+/// What `y` and `Y` put on the clipboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Copied {
+    Value,
+    /// The path of the value, as the bottom border of the tree shows it.
+    Path,
+}
+
 #[derive(Debug)]
 pub enum Message {
     Move(Movement),
@@ -308,6 +341,13 @@ pub enum Message {
     Paste(String),
     RunFilter,
     CancelFilter,
+    /// Copies the value under the tree cursor, or in the value popup, or its path.
+    Copy(Copied),
+    /// Opens the filter editor with the filter of the documents whose field at the tree cursor
+    /// holds the same value, when the value has a literal in SQL.
+    FilterOnValue,
+    /// Shows an earlier filter that ran, or a later one, in the filter editor.
+    Recall(Recall),
     /// Ctrl-C, which ends the innermost thing going on: stops waiting for Firestore, else closes
     /// the popup, else the filter editor, else quits.
     Interrupt,
@@ -331,6 +371,11 @@ pub enum Effect {
         request: RequestId,
         document: String,
     },
+    /// Puts `text`, the value or the path `copied` names, on the terminal's clipboard.
+    Copy {
+        copied: Copied,
+        text: String,
+    },
     /// Stops every call still pending.
     Cancel,
     Quit,
@@ -346,13 +391,19 @@ pub struct Browser {
     focus: Pane,
     filter_editor: Option<FilterEditor>,
     popup: Option<Popup>,
+    history: FilterHistory,
     documents_path: String,
     last_request: RequestId,
 }
 
 impl Browser {
-    /// A browser of `target`, and the query that reads its first documents.
-    pub fn open(target: BrowseTarget, documents_path: &str) -> (Self, Effect) {
+    /// A browser of `target`, which recalls the filters of `history`, and the query that reads
+    /// its first documents.
+    pub fn open(
+        target: BrowseTarget,
+        documents_path: &str,
+        history: FilterHistory,
+    ) -> (Self, Effect) {
         let request = RequestId::default().following();
         let current = Level::loading(target.collection, target.filter, request);
         let query = current.query(request, current.filter.clone());
@@ -362,6 +413,7 @@ impl Browser {
             focus: Pane::Documents,
             filter_editor: None,
             popup: None,
+            history,
             documents_path: documents_path.to_string(),
             last_request: request,
         };
@@ -408,6 +460,21 @@ impl Browser {
             }
             Message::RunFilter => return self.run_filter(),
             Message::CancelFilter => self.filter_editor = None,
+            Message::Copy(copied) => {
+                return self
+                    .copy_text(copied)
+                    .map(|text| Effect::Copy { copied, text })
+            }
+            Message::FilterOnValue => {
+                if let Some(filter) = self.filter_on_cursor() {
+                    self.filter_editor = Some(FilterEditor::from(&filter));
+                }
+            }
+            Message::Recall(recall) => {
+                if let Some(editor) = &mut self.filter_editor {
+                    editor.recall(recall, &self.history);
+                }
+            }
             Message::Interrupt => return self.interrupt(),
             Message::Quit => return Some(Effect::Quit),
             Message::DocumentsLoaded { request, outcome } => self.loaded(request, outcome),
@@ -427,11 +494,15 @@ impl Browser {
         let level = &mut self.current;
         match self.focus {
             Pane::Documents => {
-                let count = level.documents().map_or(0, <[_]>::len);
-                let selected = movement.applied_to(level.selected, count);
+                let Some(documents) = level.documents.as_deref() else {
+                    return;
+                };
+                let selected = movement.applied_to(level.selected, documents.len());
                 if selected != level.selected {
+                    level
+                        .tree
+                        .switch_document(&documents[level.selected], &documents[selected]);
                     level.selected = selected;
-                    level.tree = Tree::default();
                 }
             }
             Pane::Tree => {
@@ -582,6 +653,7 @@ impl Browser {
                             .iter()
                             .position(|document| document.name == selected.name)
                     });
+                self.history.add(&filter);
                 level.documents = Some(documents);
                 level.filter = filter;
                 match kept {
@@ -666,13 +738,93 @@ impl Browser {
     pub fn documents_path(&self) -> &str {
         &self.documents_path
     }
+
+    /// The filters this browser and the ones before it ran, for the next browser.
+    pub fn into_history(self) -> FilterHistory {
+        self.history
+    }
+
+    /// The row under the tree cursor and its document, while the tree has the focus.
+    pub fn tree_cursor(&self) -> Option<(&FirestoreDocument, Row<'_>)> {
+        let level = &self.current;
+        let document = level
+            .selected_document()
+            .filter(|_| self.focus == Pane::Tree)?;
+        Some((document, level.tree.cursor_row(document)?))
+    }
+
+    /// The filter `f` opens the editor with: the documents whose field at the tree cursor holds
+    /// the same leaf value.
+    pub fn filter_on_cursor(&self) -> Option<FilterTail> {
+        match self.tree_cursor()? {
+            (
+                _,
+                Row::Field {
+                    path,
+                    value,
+                    fold: Fold::Leaf,
+                },
+            ) => FilterTail::matching(&path, value),
+            _ => None,
+        }
+    }
+
+    /// What `y` or `Y` puts on the clipboard: the value under the tree cursor or in the value
+    /// popup, or its path as the bottom border of the tree shows it.
+    fn copy_text(&self, copied: Copied) -> Option<String> {
+        if let Some(popup) = &self.popup {
+            return match (popup, copied) {
+                (Popup::Value { value, .. }, Copied::Value) => Some(self.clipboard_value(value)),
+                (Popup::Value { path, .. }, Copied::Path) => {
+                    Some(FieldPath::from(path).to_string())
+                }
+                (Popup::Error(_) | Popup::Help, _) => None,
+            };
+        }
+        match (copied, self.tree_cursor()?) {
+            (Copied::Value, (_, Row::Field { value, .. })) => Some(self.clipboard_value(value)),
+            (Copied::Value, _) => None,
+            (Copied::Path, (document, row)) => Some(self.row_path(&row, document)),
+        }
+    }
+
+    /// `value` as it pastes: a string as its text, and any other value as compact JSON in the
+    /// tagged encoding `fsq export` writes, which reads back to the same Firestore type.
+    fn clipboard_value(&self, value: &Value) -> String {
+        if let Some(ValueType::StringValue(text)) = &value.value_type {
+            return text.clone();
+        }
+        FirestoreDb::serialize_value_to_json(
+            &self.documents_path,
+            value,
+            FirestoreJsonEncoding::Tagged,
+        )
+        .expect("Firestore returns no expression value, the one kind the tagged encoding refuses")
+        .to_string()
+    }
+
+    /// Where `row` of the tree of `document` points: a field path as SQL reads it, a collection
+    /// path, and for the group of subcollections, the path of the document they are under.
+    pub fn row_path(&self, row: &Row<'_>, document: &FirestoreDocument) -> String {
+        let document_path =
+            FirestoreDb::relative_document_name(self.documents_path(), &document.name);
+        match row {
+            Row::Field { path, .. } => FieldPath::from(path).to_string(),
+            Row::Subcollections { .. } => document_path.to_string(),
+            Row::Subcollection(collection_id) => {
+                CollectionPath::in_document(document_path, (*collection_id).clone()).to_string()
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::browse::tree::Row;
-    use crate::render::fixtures::{draft, dune, DOCUMENTS_PATH};
+    use crate::render::fixtures::{draft, dune, string, DOCUMENTS_PATH};
+    use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
+    use firestore::gcloud_sdk::google::firestore::v1::ArrayValue;
 
     fn books(filter: &str) -> DocumentsQuery {
         DocumentsQuery {
@@ -695,17 +847,22 @@ mod tests {
 
     /// A browser of `books` that has read `draft` and `dune`, in that order.
     fn browser() -> Browser {
+        browser_of(vec![draft(), dune()])
+    }
+
+    /// A browser of `books` that has read `documents`.
+    fn browser_of(documents: Vec<FirestoreDocument>) -> Browser {
         let target = BrowseTarget {
             collection: "books".parse().expect("a collection path"),
             filter: FilterTail::default(),
         };
-        let (mut browser, first) = Browser::open(target, DOCUMENTS_PATH);
+        let (mut browser, first) = Browser::open(target, DOCUMENTS_PATH, FilterHistory::default());
         let Effect::Query(query) = first else {
             panic!("no query: {first:?}")
         };
         browser.update(Message::DocumentsLoaded {
             request: query.request,
-            outcome: Ok(vec![draft(), dune()]),
+            outcome: Ok(documents),
         });
         browser
     }
@@ -1013,27 +1170,217 @@ mod tests {
         assert_eq!(selected_id(&browser), Some("draft"));
     }
 
-    #[test]
-    fn another_document_opens_with_its_tree_collapsed() {
-        let mut browser = browser();
-        browser.update(Message::Move(Movement::Down(1)));
-        browser.update(Message::Expand);
-        browser.update(Message::Expand);
-        let expanded = |browser: &Browser| {
-            let level = browser.level();
-            let document = level.selected_document().expect("a document");
-            level
-                .tree()
-                .rows(document)
-                .iter()
-                .any(|row| row.depth() > 0 && matches!(row, Row::Field { .. }))
-        };
-        assert!(expanded(&browser));
+    fn path(names: &[&str]) -> NodePath {
+        names
+            .iter()
+            .fold(NodePath::default(), |path, name| path.field(name))
+    }
 
+    /// The path of the field under the tree cursor of the selected document.
+    fn cursor_path(browser: &Browser) -> Option<NodePath> {
+        let level = browser.level();
+        match level.tree().cursor_row(level.selected_document()?)? {
+            Row::Field { path, .. } => Some(path),
+            _ => None,
+        }
+    }
+
+    fn has_open_map(browser: &Browser) -> bool {
+        let level = browser.level();
+        let document = level.selected_document().expect("a document");
+        level
+            .tree()
+            .rows(document)
+            .iter()
+            .any(|row| row.depth() > 0 && matches!(row, Row::Field { .. }))
+    }
+
+    /// `dune` under another ID.
+    fn dune_messiah() -> FirestoreDocument {
+        let mut sequel = dune();
+        sequel.name = sequel.name.replace("dune", "dune-messiah");
+        sequel
+    }
+
+    /// Opens `address` in the tree of the first document, puts the cursor on its city, and gives
+    /// the focus back to the documents.
+    fn on_city(browser: &mut Browser) {
+        browser.update(Message::Expand);
+        browser.update(Message::Expand);
+        browser.update(Message::Move(Movement::Down(1)));
         browser.update(Message::SwitchPane);
-        browser.update(Message::Move(Movement::Up(1)));
+    }
+
+    #[test]
+    fn another_document_keeps_the_open_maps_and_the_cursor_on_the_same_path() {
+        let mut browser = browser_of(vec![dune(), dune_messiah()]);
+        on_city(&mut browser);
+        assert_eq!(cursor_path(&browser), Some(path(&["address", "city"])));
+
         browser.update(Message::Move(Movement::Down(1)));
 
-        assert!(!expanded(&browser));
+        assert_eq!(selected_id(&browser), Some("dune-messiah"));
+        assert!(has_open_map(&browser));
+        assert_eq!(cursor_path(&browser), Some(path(&["address", "city"])));
+    }
+
+    #[test]
+    fn the_cursor_falls_back_to_the_nearest_path_the_next_document_has() {
+        let mut one_tag = dune();
+        one_tag.name = one_tag.name.replace("dune", "one-tag");
+        let tags = Value {
+            value_type: Some(ValueType::ArrayValue(ArrayValue {
+                values: vec![string("sf")],
+            })),
+        };
+        one_tag.fields.insert("tags".to_string(), tags);
+        let mut browser = browser_of(vec![dune(), one_tag]);
+        browser.update(Message::Expand);
+        browser.update(Message::Move(Movement::Down(10)));
+        browser.update(Message::Expand);
+        browser.update(Message::Move(Movement::Down(2)));
+        assert_eq!(cursor_path(&browser).map(|at| at.depth()), Some(1));
+        browser.update(Message::SwitchPane);
+
+        browser.update(Message::Move(Movement::Down(1)));
+
+        assert_eq!(cursor_path(&browser), Some(path(&["tags"])));
+        assert_eq!(browser.level().tree().cursor(), 10);
+    }
+
+    #[test]
+    fn a_new_query_starts_with_the_tree_collapsed() {
+        let mut browser = browser_of(vec![dune(), dune_messiah()]);
+        on_city(&mut browser);
+
+        let query = run_filter(&mut browser, "WHERE pages > 100");
+        browser.update(Message::DocumentsLoaded {
+            request: query.request,
+            outcome: Ok(vec![dune(), dune_messiah()]),
+        });
+
+        assert!(!has_open_map(&browser));
+        assert_eq!(browser.level().tree().cursor(), 0);
+    }
+
+    /// Runs `filter` in place of the one in the editor, and answers it with `outcome`.
+    fn answered(browser: &mut Browser, filter: &str, outcome: FsqResult<Vec<FirestoreDocument>>) {
+        browser.update(Message::EditFilter);
+        browser.update(Message::Edit(Edit::DeleteToStart));
+        browser.update(Message::Paste(filter.to_string()));
+        let query = query_of(browser.update(Message::RunFilter));
+        browser.update(Message::DocumentsLoaded {
+            request: query.request,
+            outcome,
+        });
+    }
+
+    /// The text of the editor after each of `recalls`.
+    fn recalled(browser: &mut Browser, recalls: &[Recall]) -> Vec<String> {
+        recalls
+            .iter()
+            .map(|recall| {
+                browser.update(Message::Recall(*recall));
+                edited_text(browser).unwrap_or_default().to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn up_and_down_recall_the_filters_that_ran_most_recent_first_and_keep_the_draft() {
+        let mut browser = browser();
+        for filter in [
+            "WHERE pages > 100",
+            "WHERE genre = 'sf'",
+            "WHERE pages > 100",
+        ] {
+            answered(&mut browser, filter, Ok(vec![dune()]));
+        }
+        browser.update(Message::EditFilter);
+        browser.update(Message::Edit(Edit::DeleteToStart));
+        browser.update(Message::Paste("ORDER BY".to_string()));
+
+        let texts = recalled(
+            &mut browser,
+            &[
+                Recall::Older,
+                Recall::Older,
+                Recall::Older,
+                Recall::Newer,
+                Recall::Newer,
+                Recall::Newer,
+            ],
+        );
+
+        assert_eq!(
+            texts,
+            [
+                "WHERE pages > 100",
+                "WHERE genre = 'sf'",
+                "WHERE genre = 'sf'",
+                "WHERE pages > 100",
+                "ORDER BY",
+                "ORDER BY",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_filter_that_failed_is_not_recalled() {
+        let mut browser = browser();
+        answered(&mut browser, "WHERE pages > 100", Ok(vec![dune()]));
+        answered(&mut browser, "WHERE pagez > 100", Err(FsqError::NoProject));
+
+        let texts = recalled(&mut browser, &[Recall::Older, Recall::Older, Recall::Newer]);
+
+        assert_eq!(
+            texts,
+            [
+                "WHERE pages > 100",
+                "WHERE pages > 100",
+                "WHERE pagez > 100"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_next_browser_recalls_the_filters_of_the_one_before() {
+        let mut first = browser();
+        answered(&mut first, "WHERE pages > 100", Ok(vec![dune()]));
+        let target = BrowseTarget {
+            collection: "books".parse().expect("a collection path"),
+            filter: FilterTail::default(),
+        };
+
+        let (mut next, _) = Browser::open(target, DOCUMENTS_PATH, first.into_history());
+        next.update(Message::EditFilter);
+
+        assert_eq!(recalled(&mut next, &[Recall::Older]), ["WHERE pages > 100"]);
+    }
+
+    #[test]
+    fn the_order_key_is_the_first_field_path_the_documents_are_ordered_by() {
+        let order_key = |filter: &str| FilterTail::from(filter).order_key();
+
+        assert_eq!(
+            order_key("WHERE pages > 100 ORDER BY rating DESC, title LIMIT 5"),
+            Some(path(&["rating"]))
+        );
+        assert_eq!(
+            order_key("ORDER BY address.city"),
+            Some(path(&["address", "city"]))
+        );
+        assert_eq!(
+            order_key("ORDER BY `unit-price`"),
+            Some(path(&["unit-price"]))
+        );
+        for unordered in [
+            "",
+            "WHERE note = 'ORDER BY rating'",
+            "ORDER BY LENGTH(title)",
+            "ORDER BY",
+        ] {
+            assert_eq!(order_key(unordered), None, "{unordered}");
+        }
     }
 }

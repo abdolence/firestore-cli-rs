@@ -1,16 +1,16 @@
+mod order;
 mod popup;
 
-use super::state::{Browser, Load, Movement, Pane, RequestId, BROWSE_DOCUMENT_LIMIT};
+use super::state::{Browser, Copied, Load, Movement, Pane, RequestId, BROWSE_DOCUMENT_LIMIT};
 use super::tree::{Fold, Listing, Row, Tree};
-use crate::describe::CollectionPath;
-use crate::field_path::FieldPath;
 use crate::render::{
     counted, cut_middle, type_name, ExpandedMode, OutputFormat, Theme, View, ANIMATION_TICK,
 };
 use firestore::gcloud_sdk::google::firestore::v1::value::ValueType;
 use firestore::gcloud_sdk::google::firestore::v1::Value;
-use firestore::{FirestoreDb, FirestoreDocument};
+use firestore::FirestoreDocument;
 use indicatif::ProgressStyle;
+use order::OrderColumn;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -47,7 +47,7 @@ const SELECTION_MARKER: &str = "▌";
 /// What the browser keeps from one frame to the next: where each list and the popup are
 /// scrolled to, so that the cursor moves inside the visible rows rather than dragging them
 /// along, how many rows a page of the focused pane or the popup holds, where the line of the
-/// filter editor starts, and the waits on Firestore that are drawn.
+/// filter editor starts, the waits on Firestore that are drawn, and what the last key copied.
 #[derive(Debug, Default)]
 pub struct Viewport {
     documents: ListState,
@@ -59,6 +59,8 @@ pub struct Viewport {
     listing_wait: Option<Wait>,
     /// `None` while no popup shows, so that the next one opens at its top.
     popup: Option<PopupScroll>,
+    /// What the last key put on the clipboard, which the footer notes until the next key.
+    pub(super) copied: Option<Copied>,
 }
 
 impl Viewport {
@@ -137,12 +139,13 @@ impl Browser {
             Constraint::Length(u16::try_from(error.len()).unwrap_or(u16::MAX)),
         ])
         .areas(area);
-        let documents_width = self.documents_width(body.width, query_waited);
+        let order = OrderColumn::of(self);
+        let documents_width = self.documents_width(body.width, query_waited, order.as_ref());
         let [documents, tree] =
             Layout::horizontal([Constraint::Length(documents_width), Constraint::Fill(1)])
                 .areas(body);
         frame.render_widget(self.header(usize::from(area.width)), header);
-        self.draw_documents(frame, documents, viewport, query_waited);
+        self.draw_documents(frame, documents, viewport, query_waited, order.as_ref());
         self.draw_tree(frame, tree, viewport, listing_waited);
         self.draw_footer(frame, footer, viewport);
         frame.render_widget(Paragraph::new(error), error_area);
@@ -181,32 +184,43 @@ impl Browser {
     }
 
     /// The columns of the documents pane: its longest ID with the borders and the selection
-    /// marker, or its title while no documents have been read, at least
-    /// [`DOCUMENTS_PANE_MIN_WIDTH`] and at most [`DOCUMENTS_PANE_MAX_PERCENT`] of `width`.
-    fn documents_width(&self, width: u16, waited: Option<Duration>) -> u16 {
-        let content = match self.level().documents() {
-            Some(documents) => {
-                let longest = documents
-                    .iter()
-                    .map(|document| Span::from(document_id(document)).width())
-                    .max()
-                    .unwrap_or_default();
-                longest + Span::from(SELECTION_MARKER).width() + 2
-            }
-            None => self.documents_titles(waited)[0].width() + 2,
-        };
+    /// marker, and its `order` column when that still has room, or its title while no documents
+    /// have been read, at least [`DOCUMENTS_PANE_MIN_WIDTH`] and at most
+    /// [`DOCUMENTS_PANE_MAX_PERCENT`] of `width`.
+    fn documents_width(
+        &self,
+        width: u16,
+        waited: Option<Duration>,
+        order: Option<&OrderColumn>,
+    ) -> u16 {
         let width = usize::from(width);
         let most = (width * DOCUMENTS_PANE_MAX_PERCENT / 100).max(DOCUMENTS_PANE_MIN_WIDTH);
-        let columns = content.clamp(DOCUMENTS_PANE_MIN_WIDTH, most).min(width);
+        let fitted = |content: usize| content.clamp(DOCUMENTS_PANE_MIN_WIDTH, most).min(width);
+        let frame = Span::from(SELECTION_MARKER).width() + 2;
+        let columns = match self.level().documents() {
+            Some(documents) => {
+                let longest = longest_id(documents);
+                order
+                    .map(|order| fitted(frame + longest + order.width()))
+                    .filter(|&columns| {
+                        OrderColumn::room(longest, columns.saturating_sub(frame)).is_some()
+                    })
+                    .unwrap_or_else(|| fitted(frame + longest))
+            }
+            None => fitted(self.documents_titles(waited)[0].width() + 2),
+        };
         u16::try_from(columns).unwrap_or(u16::MAX)
     }
 
+    /// Draws the IDs of the documents, and after them the `order` column where the pane has room
+    /// for the longest ID and some of the values.
     fn draw_documents(
         &self,
         frame: &mut Frame,
         area: Rect,
         viewport: &mut Viewport,
         waited: Option<Duration>,
+        order: Option<&OrderColumn>,
     ) {
         let level = self.level();
         let title = self.documents_title(waited, usize::from(area.width));
@@ -215,13 +229,20 @@ impl Browser {
         if self.focus() == Pane::Documents {
             viewport.page_rows = usize::from(inner.height);
         }
-        let id_width =
-            usize::from(inner.width).saturating_sub(Span::from(SELECTION_MARKER).width());
-        let items: Vec<ListItem> = level
-            .documents()
-            .unwrap_or_default()
+        let width = usize::from(inner.width).saturating_sub(Span::from(SELECTION_MARKER).width());
+        let documents = level.documents().unwrap_or_default();
+        let longest = longest_id(documents);
+        let column = order.and_then(|order| Some((order, OrderColumn::room(longest, width)?)));
+        let items: Vec<ListItem> = documents
             .iter()
-            .map(|document| ListItem::new(cut_middle(document_id(document), id_width)))
+            .enumerate()
+            .map(|(position, document)| {
+                let id = document_id(document);
+                match column {
+                    Some((order, room)) => ListItem::new(order.line(position, id, longest, room)),
+                    None => ListItem::new(cut_middle(id, width)),
+                }
+            })
             .collect();
         viewport.documents.select(Some(level.selected()));
         frame.render_stateful_widget(
@@ -357,20 +378,6 @@ impl Browser {
             area,
             &mut viewport.tree,
         );
-    }
-
-    /// Where `row` of the tree of `document` points: a field path as SQL reads it, a collection
-    /// path, and for the group of subcollections, the path of the document they are under.
-    fn row_path(&self, row: &Row<'_>, document: &FirestoreDocument) -> String {
-        let document_path =
-            FirestoreDb::relative_document_name(self.documents_path(), &document.name);
-        match row {
-            Row::Field { path, .. } => FieldPath::from(path).to_string(),
-            Row::Subcollections { .. } => document_path.to_string(),
-            Row::Subcollection(collection_id) => {
-                CollectionPath::in_document(document_path, (*collection_id).clone()).to_string()
-            }
-        }
     }
 
     /// Why no document is selected, and what to do about it. `None` while the first documents
@@ -684,6 +691,15 @@ fn document_id(document: &FirestoreDocument) -> &str {
     document.name.rsplit('/').next().unwrap_or_default()
 }
 
+/// The columns the longest ID of `documents` takes.
+fn longest_id(documents: &[FirestoreDocument]) -> usize {
+    documents
+        .iter()
+        .map(|document| Span::from(document_id(document)).width())
+        .max()
+        .unwrap_or_default()
+}
+
 /// The colour of a value, as [`Theme::new`] gives it in a table.
 fn value_style(value: &Value) -> Style {
     match &value.value_type {
@@ -702,12 +718,12 @@ fn value_style(value: &Value) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browse::editor::Edit;
+    use crate::browse::editor::{Edit, FilterHistory};
     use crate::browse::pressed;
     use crate::browse::state::{Effect, Message, Movement, RequestId};
     use crate::browse::{BrowseTarget, FilterTail};
     use crate::errors::FsqError;
-    use crate::render::fixtures::{document, draft, dune, string, DOCUMENTS_PATH};
+    use crate::render::fixtures::{document, draft, dune, string, value, DOCUMENTS_PATH};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use firestore::errors::FirestoreError;
     use firestore::gcloud_sdk::tonic::{Code, Status};
@@ -830,7 +846,7 @@ mod tests {
             collection: collection.parse().expect("a collection path"),
             filter: FilterTail::from(filter),
         };
-        Browser::open(target, DOCUMENTS_PATH).0
+        Browser::open(target, DOCUMENTS_PATH, FilterHistory::default()).0
     }
 
     /// The request of the query the browser waits for.
@@ -869,6 +885,7 @@ mod tests {
         let mut browser = browser_of("books", "WHERE pages > 100", vec![draft(), dune()]);
         browser.update(Message::Move(Movement::Down(1)));
         browser.update(Message::Expand);
+        browser.update(Message::Move(Movement::First));
         browser.update(Message::Expand);
 
         let lines = TestScreen::new(80, 24).draw(&browser);
@@ -1490,6 +1507,104 @@ mod tests {
         }
         screen.press(&mut browser, KeyCode::Esc);
         assert!(browser.popup().is_none());
+    }
+
+    /// A book with the ID `id` and the rating `rating`.
+    fn rated(id: &str, rating: f64) -> FirestoreDocument {
+        document(
+            id,
+            vec![
+                ("title", string("t")),
+                ("rating", value(ValueType::DoubleValue(rating))),
+            ],
+        )
+    }
+
+    /// The text inside the documents pane on `line`.
+    fn in_documents_pane(line: &str) -> String {
+        line.chars().skip(1).take_while(|&c| c != '│').collect()
+    }
+
+    #[test]
+    fn an_order_by_shows_the_value_of_its_first_key_dim_after_each_id() {
+        let ordered = browser_of(
+            "books",
+            "ORDER BY rating DESC",
+            vec![rated("dune", 4.5), rated("emma", 3.25)],
+        );
+        let mut screen = TestScreen::new(80, 24);
+
+        let lines = screen.draw(&ordered);
+
+        assert_eq!(in_documents_pane(&lines[2]).trim_end(), "▌dune  4.5");
+        assert_eq!(in_documents_pane(&lines[3]), " emma  3.25");
+        let value_x = u16::try_from(column_of(&lines[3..], "emma", "3.25")).expect("a column");
+        assert!(screen.cell(value_x, 3).modifier.contains(Modifier::DIM));
+        assert!(!screen.cell(2, 3).modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn the_order_column_is_left_out_without_an_order_by_and_in_a_narrow_pane() {
+        let documents = || vec![rated("dune", 4.5), rated("emma", 3.25)];
+        let unordered = browser_of("books", "WHERE rating > 3", documents());
+        let lines = TestScreen::new(80, 24).draw(&unordered);
+        assert_eq!(in_documents_pane(&lines[2]).trim_end(), "▌dune");
+
+        let long_ids = vec![
+            rated("Zk3QmX9aB7cD2eF4gH57", 4.5),
+            rated("Zk3QmX9aB7cD2eF4gH58", 3.25),
+        ];
+        let ordered = browser_of("books", "ORDER BY rating", long_ids);
+        let wide = TestScreen::new(120, 24).draw(&ordered);
+        let narrow = TestScreen::new(80, 24).draw(&ordered);
+        assert!(
+            in_documents_pane(&wide[2]).trim_end().ends_with("4.5"),
+            "{}",
+            wide[2]
+        );
+        assert_eq!(in_documents_pane(&narrow[2]), "▌Zk3QmX9aB7cD2eF4gH57");
+    }
+
+    #[test]
+    fn the_hints_offer_y_and_f_only_where_they_work() {
+        let footer = |field: &str| {
+            let browser = in_tree_at(vec![dune()], field);
+            let lines = TestScreen::new(120, 24).draw(&browser);
+            lines[23].clone()
+        };
+
+        let on_leaf = footer("title");
+        let on_map = footer("address");
+        let documents = TestScreen::new(120, 24).draw(&browser_of("books", "", vec![dune()]));
+
+        assert!(
+            on_leaf.contains("y copy") && on_leaf.contains("f where"),
+            "{on_leaf}"
+        );
+        assert!(
+            on_map.contains("y copy") && !on_map.contains("f where"),
+            "{on_map}"
+        );
+        assert!(!documents[23].contains("y copy") && !documents[23].contains("f where"));
+    }
+
+    #[test]
+    fn the_note_of_a_copy_shows_dim_until_the_next_key() {
+        let mut browser = in_tree_at(vec![dune()], "blurb");
+        let mut screen = TestScreen::new(80, 24);
+
+        let copied = screen.press(&mut browser, KeyCode::Char('Y'));
+        let note_x = u16::try_from(column_of(&copied, "copied path", "copied")).expect("a column");
+        assert!(screen.cell(note_x, 23).modifier.contains(Modifier::DIM));
+        let moved = screen.press(&mut browser, KeyCode::Down);
+        screen.press(&mut browser, KeyCode::Up);
+        screen.press(&mut browser, KeyCode::Enter);
+        let in_popup = screen.press(&mut browser, KeyCode::Char('y'));
+        let scrolled = screen.press(&mut browser, KeyCode::Down);
+
+        assert!(!moved[23].contains("copied"), "{}", moved[23]);
+        assert!(in_popup[23].contains("copied value"), "{}", in_popup[23]);
+        assert!(!scrolled[23].contains("copied"), "{}", scrolled[23]);
     }
 
     #[test]

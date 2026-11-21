@@ -78,7 +78,10 @@ impl Browser {
         let top = scroll.top;
         viewport.page_rows = rows;
 
-        let mut hints = vec![Hint::new("Esc", "close", 2)];
+        let mut hints = vec![Hint::new("Esc", "close", 3)];
+        if let Popup::Value { .. } = popup {
+            hints.insert(0, Hint::new("y", "copy", 2));
+        }
         if last_top > 0 {
             hints.insert(0, Hint::new("↑↓", "scroll", 1));
         }
@@ -326,6 +329,14 @@ const HELP_SECTIONS: &[HelpSection] = &[
                 action: "edit the filter",
             },
             HelpKey {
+                keys: "f",
+                action: "open the editor with a filter on the value under the cursor, WHERE <path> = <value>",
+            },
+            HelpKey {
+                keys: "y Y",
+                action: "copy the value under the cursor, or its path, to the clipboard",
+            },
+            HelpKey {
                 keys: "r",
                 action: "read the documents again with their filter",
             },
@@ -357,6 +368,10 @@ const HELP_SECTIONS: &[HelpSection] = &[
             HelpKey {
                 keys: "← →  Home End",
                 action: "move the cursor",
+            },
+            HelpKey {
+                keys: "↑ ↓",
+                action: "recall an earlier filter that ran, or a later one",
             },
             HelpKey {
                 keys: "Backspace Delete",
@@ -398,6 +413,10 @@ const HELP_SECTIONS: &[HelpSection] = &[
             HelpKey {
                 keys: "g G  Home End",
                 action: "go to the start or the end",
+            },
+            HelpKey {
+                keys: "y Y",
+                action: "copy the value, or its path, to the clipboard",
             },
             HelpKey {
                 keys: "Esc",

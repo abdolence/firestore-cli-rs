@@ -2,6 +2,7 @@ mod indexes;
 mod rows;
 mod statement;
 
+use crate::browse::FilterHistory;
 use crate::codegen::CodegenOptions;
 use crate::collection_tree::{CollectionTree, CollectionTreeTarget};
 use crate::connection::{Connection, EditionStatus, PipelineProbe};
@@ -71,6 +72,8 @@ pub struct Session {
     last_result: LastResult,
     /// The task that lists the root collections for completion while the prompt is already open.
     collections_loading: Option<JoinHandle<()>>,
+    /// The filters `\browse` ran, which every later `\browse` of the session recalls.
+    filter_history: FilterHistory,
 }
 
 impl Session {
@@ -86,6 +89,7 @@ impl Session {
             last_select: None,
             last_result: LastResult::default(),
             collections_loading: None,
+            filter_history: FilterHistory::default(),
         }
     }
 
@@ -133,7 +137,9 @@ impl Session {
             MetaCommand::ListCollections(None) => self.run_statement("SHOW COLLECTIONS").await?,
             MetaCommand::ListCollections(Some(target)) => self.list_collection_tree(target).await?,
             MetaCommand::Describe(target) => self.describe(&target).await?,
-            MetaCommand::Browse(target) => crate::browse::run(&self.connection, target).await?,
+            MetaCommand::Browse(target) => {
+                crate::browse::run(&self.connection, target, &mut self.filter_history).await?
+            }
             MetaCommand::ExpandedRow(row) => self.show_row(row)?,
             MetaCommand::Expanded(mode) => {
                 self.settings.expanded = mode.unwrap_or(match self.settings.expanded {
