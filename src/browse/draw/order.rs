@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 /// The columns between an ID and the value after it.
 const ORDER_COLUMN_GAP: usize = 2;
 
-/// The fewest columns of a value that make the column worth its room beside the IDs.
+/// The fewest columns of a cut value that make the column worth its room beside the IDs.
 const ORDER_COLUMN_MIN_WIDTH: usize = 4;
 
 /// The value of the first `ORDER BY` key of each document, dim after its ID, so that the order of
@@ -36,24 +36,29 @@ impl OrderColumn {
             .then_some(Self { values })
     }
 
-    /// The columns the widest value takes, with the gap before it.
-    pub(super) fn width(&self) -> usize {
-        let widest = self
-            .values
+    /// The columns the widest value takes.
+    fn widest(&self) -> usize {
+        self.values
             .iter()
             .flatten()
             .map(|value| console::measure_text_width(value))
             .max()
-            .unwrap_or_default();
-        ORDER_COLUMN_GAP + widest
+            .unwrap_or_default()
+    }
+
+    /// The columns the widest value takes, with the gap before it.
+    pub(super) fn width(&self) -> usize {
+        ORDER_COLUMN_GAP + self.widest()
     }
 
     /// The columns left for the values when the IDs take `id_width` of `width`, `None` when that
-    /// is too few for the column.
-    pub(super) fn room(id_width: usize, width: usize) -> Option<usize> {
+    /// is too few for the column: less than the widest value, and less than
+    /// [`ORDER_COLUMN_MIN_WIDTH`].
+    pub(super) fn room(&self, id_width: usize, width: usize) -> Option<usize> {
+        let least = ORDER_COLUMN_MIN_WIDTH.min(self.widest());
         width
             .checked_sub(id_width + ORDER_COLUMN_GAP)
-            .filter(|&room| room >= ORDER_COLUMN_MIN_WIDTH)
+            .filter(|&room| room >= least)
     }
 
     /// The line of the document at `position`: `id` padded to `id_width`, then its value cut to

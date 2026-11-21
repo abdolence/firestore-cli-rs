@@ -205,9 +205,11 @@ impl Browser {
             Some(documents) => {
                 let longest = longest_id(documents);
                 order
-                    .map(|order| fitted(frame + longest + order.width()))
-                    .filter(|&columns| {
-                        OrderColumn::room(longest, columns.saturating_sub(frame)).is_some()
+                    .and_then(|order| {
+                        let columns = fitted(frame + longest + order.width());
+                        order
+                            .room(longest, columns.saturating_sub(frame))
+                            .map(|_| columns)
                     })
                     .unwrap_or_else(|| fitted(frame + longest))
             }
@@ -236,7 +238,7 @@ impl Browser {
         let width = usize::from(inner.width).saturating_sub(Span::from(SELECTION_MARKER).width());
         let documents = level.documents().unwrap_or_default();
         let longest = longest_id(documents);
-        let column = order.and_then(|order| Some((order, OrderColumn::room(longest, width)?)));
+        let column = order.and_then(|order| Some((order, order.room(longest, width)?)));
         let items: Vec<ListItem> = documents
             .iter()
             .enumerate()
@@ -1385,6 +1387,26 @@ mod tests {
         let value_x = u16::try_from(column_of(&lines[3..], "emma", "3.25")).expect("a column");
         assert!(screen.cell(value_x, 3).modifier.contains(Modifier::DIM));
         assert!(!screen.cell(2, 3).modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn order_values_narrower_than_the_minimum_width_show_whole() {
+        let ordered = browser_of(
+            "books",
+            "ORDER BY rating DESC",
+            vec![
+                rated("dune", 4.5),
+                rated("emma", 4.3),
+                rated("foundation", 4.0),
+            ],
+        );
+
+        let lines = TestScreen::new(80, 24).draw(&ordered);
+
+        for (line, rating) in [(2, "4.5"), (3, "4.3"), (4, "4.0")] {
+            let shown = in_documents_pane(&lines[line]);
+            assert!(shown.trim_end().ends_with(rating), "{shown}");
+        }
     }
 
     #[test]
