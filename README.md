@@ -2,30 +2,32 @@
 
 # fsq
 
-A command line client for Google Firestore: a SQL REPL with tables, query plans and index statements,
-and a scripting mode with JSON output. It is built on the [firestore](https://github.com/abdolence/firestore-rs)
-crate, which translates SQL into Firestore pipelines.
+A command line client for Google Firestore: a SQL REPL with tables, query plans and index statements, a full-screen
+collection browser, and a scripting mode with JSON output. It is built on the
+[firestore](https://github.com/abdolence/firestore-rs) crate, which translates SQL into Firestore pipelines, the
+query format of the Enterprise edition. The SQL dialect is documented in the
+[firestore book](https://firestore-rust.abdolence.dev).
 
-![fsq-demo](media/fsq-demo.webp)
+![fsq REPL: listing collections, SELECT, UPDATE, describing and browsing a collection, generating Rust code](media/fsq-browse.webp)
 
-## Features
-
-* **SQL REPL:** highlighting, completion of collections and fields, statements across several lines and a history;
-* **Results as tables:** nested values in compact cells, an expanded view with one block per document, and a detail view with the path, type and whole value of every field;
-* **Query plans:** `EXPLAIN` draws the plan as a coloured tree, with a warning when it reads every document of the
-  collection;
-* **Index statements:** `CREATE INDEX`, `DROP INDEX`, `ALTER COLLECTION` and `SHOW INDEXES`, waiting for an index
-  build with a spinner;
-* **Index files:** `fsq index` plans, syncs, exports, lists, creates and deletes indexes from a
-  `firestore.indexes.json`, the file of the Firebase CLI;
-* **Collections and fields:** `\l` lists the collections, and `\d` lists the field paths of a collection with their
-  types, how often they are present and an example value;
-* **Collection browser:** `fsq browse` and `\browse` show the documents of a collection full screen, open maps, arrays
-  and subcollections with the cursor, and filter the documents with the end of a `SELECT`;
-* **Fluent Rust code:** `fsq codegen` and `\gen` show the code of the firestore crate's fluent API for a `SELECT`, with
-  a row struct typed from sample rows;
-* **Export and import:** documents as JSON lines, in an encoding that reads back to the same Firestore types;
-* **Scripting:** a statement or a script without the REPL, with `--format json` or `jsonl` output for other tools.
+* **SQL REPL:** highlighting, completion of collections and fields, statements across several lines and a history,
+  see [The REPL](#the-repl);
+* **Results as tables:** nested values in compact cells, an expanded view and a detail view of every field, see
+  [Results](#results);
+* **Query plans:** `EXPLAIN` draws the plan as a tree, with a warning when it reads every document, see
+  [Query plans](#query-plans);
+* **Collection browser:** `fsq browse` shows the documents of a collection full screen, opens maps, arrays and
+  subcollections, and filters with the end of a `SELECT`, see [Browsing a collection](#browsing-a-collection);
+* **Collections and fields:** `\l` and `\d` list the collections and the field paths of a collection, see
+  [Exploring collections](#exploring-collections);
+* **Export and import:** documents as JSON lines that read back to the same Firestore types, see
+  [Export and import](#export-and-import);
+* **Indexes:** index statements in SQL, and `fsq index` to plan and sync the `firestore.indexes.json` of the Firebase CLI,
+  see [Indexes](#indexes);
+* **Fluent Rust code:** `fsq codegen` shows the code of the firestore crate's fluent API for a `SELECT`, see
+  [Fluent Rust code](#fluent-rust-code);
+* **Scripting:** a statement or a script without the REPL, with `json` or `jsonl` output for other tools, see
+  [Scripting](#scripting).
 
 ## Installation
 
@@ -43,48 +45,35 @@ On Windows (PowerShell):
 irm https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.ps1 | iex
 ```
 
-The scripts pick the archive for your operating system and architecture from the latest release
-and verify it against the SHA-256 digest GitHub records for it; nothing is installed if the digest
-is missing or does not match, or if the downloaded binary does not run on your system. Running a
-script again upgrades fsq in place. The Linux x86_64 and aarch64 archives are built for glibc;
-on musl systems such as Alpine use [Cargo](#cargo).
+The scripts pick the archive for your operating system and architecture from the latest release and verify it against
+the SHA-256 digest GitHub records for it. Nothing is installed if the digest is missing or does not match, or if the
+downloaded binary does not run on your system. Running a script again upgrades fsq in place.
 
 * `FSQ_INSTALL_DIR`: the install directory. Default is `~/.local/bin` on macOS, Linux and FreeBSD
   and `%LOCALAPPDATA%\Programs\fsq` on Windows;
-* `FSQ_VERSION`: the release tag to install, such as `v0.1.1`. Default is the latest release.
+* `FSQ_VERSION`: the release tag to install, such as `v0.2.0`. Default is the latest release.
 
-The Windows script adds the install directory to your user `PATH`; the shell script prints the
-`export` line to add if the directory is not on your `PATH`.
+The Windows script adds the install directory to your user `PATH`; the shell script prints the `export` line to add if
+the directory is not on your `PATH`.
 
-To install a specific version on macOS, Linux and FreeBSD:
+<details>
+<summary>Install a specific version or into a custom directory</summary>
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.sh | env FSQ_VERSION=v0.1.1 sh
-```
-
-On Windows:
-
-```powershell
-& { try { $env:FSQ_VERSION = 'v0.1.1'; irm https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.ps1 | iex } finally { Remove-Item Env:FSQ_VERSION } }
-```
-
-To install into a custom directory on macOS, Linux and FreeBSD:
+On macOS, Linux and FreeBSD:
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.sh | env FSQ_VERSION=v0.2.0 sh
 curl -fsSL https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.sh | env FSQ_INSTALL_DIR=$HOME/bin sh
 ```
 
 On Windows:
 
 ```powershell
+& { try { $env:FSQ_VERSION = 'v0.2.0'; irm https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.ps1 | iex } finally { Remove-Item Env:FSQ_VERSION } }
 & { try { $env:FSQ_INSTALL_DIR = 'C:\Tools\fsq'; irm https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.ps1 | iex } finally { Remove-Item Env:FSQ_INSTALL_DIR } }
 ```
 
-### Binary releases
-
-Download the latest release from [the GitHub releases](https://github.com/abdolence/firestore-cli-rs/releases).
-
-The Linux x86_64 and aarch64 archives need glibc; the Linux arm archive is static (musl) and needs no glibc.
+</details>
 
 ### Cargo
 
@@ -94,10 +83,23 @@ cargo install firestore-cli --locked
 
 The crate is `firestore-cli` and the binary it installs is `fsq`.
 
+### Binary releases
+
+Download the latest release from [the GitHub releases](https://github.com/abdolence/firestore-cli-rs/releases).
+
+The Linux x86_64 and aarch64 archives are built for glibc, so on musl systems such as Alpine use [Cargo](#cargo). The
+Linux arm archive is static (musl) and needs no glibc.
+
 ## Connecting
 
 ```sh
 fsq -p my-project -d my-database
+```
+
+This opens the [REPL](#the-repl). To run one statement and exit, use [scripting](#scripting):
+
+```sh
+fsq -p my-project -d my-database sql -e 'SELECT title FROM books LIMIT 10'
 ```
 
 * `-p`, `--project`: the Google Cloud project. Without it fsq uses the project the firestore crate detects: the first
@@ -113,11 +115,14 @@ writes, or the metadata server on Google Cloud. `gcloud auth login` authorises o
 
 The prompt shows `project/database (edition)`, and `\c <database>` connects to another database of the project.
 
-## Editions
+### Editions
 
 SQL needs a database of the Firestore Enterprise edition. On a Standard edition database Firestore refuses `SELECT` and
-the writes, and fsq shows its answer. `\l`, `\d`, `SHOW COLLECTIONS`, `SHOW INDEXES` and the index statements
-work on both editions.
+the SQL writes, and fsq shows its answer. These work on both editions:
+
+* `\l`, `\d`, `SHOW COLLECTIONS`, `SHOW INDEXES` and the index statements;
+* `browse` and `export` of a collection, without a filter or `--sql`;
+* `codegen --offline`.
 
 When it connects, fsq sends Firestore a pipeline that reads nothing and costs no read units. When Firestore refuses it,
 the REPL says that SQL may need an Enterprise edition database. Any other failure of the pipeline shows nothing.
@@ -128,45 +133,35 @@ A statement ends with `;` and can span several lines. A line that starts with `\
 
 | Command | What it does |
 |---|---|
-| `\l [--recursive [--depth N] [--sample K]]` | lists the collections under the root, as `SHOW COLLECTIONS` does; with `--recursive` also the subcollections, see [Listing subcollections](#listing-subcollections) |
-| `\d <collection> [--sample N]` | lists the field paths of a collection, see [Describing a collection](#describing-a-collection) |
-| `\browse <collection> [filter]` | browses the documents of a collection full screen, see [Browsing a collection](#browsing-a-collection) |
-| `\x [on\|off\|auto\|full [N]]` | switches the expanded view, without an argument toggles it; `full` shows every field of every document, and `full N` row N of the last result, see [Results](#results) |
+| `\l [--recursive]` | lists the collections under the root, as `SHOW COLLECTIONS` does; see [Listing subcollections](#listing-subcollections) |
+| `\d <collection>` | lists the field paths of a collection; see [Describing a collection](#describing-a-collection) |
+| `\browse <collection> [filter]` | browses a collection full screen; see [Browsing a collection](#browsing-a-collection) |
+| `\x [on\|off\|auto\|full [N]]` | switches the expanded view, or shows every field; see [Expanded and full views](#expanded-and-full-views) |
 | `\c <database>` | connects to another database of the project |
 | `\timing [on\|off]` | adds the round trip time and the execution stats to the footer |
 | `\wait [on\|off]` | waits for `CREATE INDEX` and `ALTER COLLECTION` to finish, on by default |
-| `\gen ['SELECT'] [--param NAME=VALUE] [--sample N] [--offline]` | shows the fluent Rust code of a `SELECT`, or of the last one that ran, see [Fluent Rust code](#fluent-rust-code) |
+| `\gen ['SELECT']` | shows the fluent Rust code of a `SELECT`, or of the last one that ran; see [Fluent Rust code](#fluent-rust-code) |
 | `\?` | lists the meta-commands |
 | `\q` | quits, as Ctrl-D does |
 
-The arguments of `\l`, `\d` and `\gen` are split as a shell splits them, so text that holds spaces or quotes is
-quoted. `\gen` takes its `SELECT` as one argument, and a JSON string for `--param` is quoted twice:
+`INSERT`, `UPDATE` and `DELETE` run as typed, with no confirmation, and print how many documents they modified.
 
-```
-\gen 'SELECT title FROM books WHERE genre = @genre' --param 'genre="science fiction"'
-```
-
-A `SELECT` that holds single quotes goes in double quotes.
-
-Tab completes a collection after `FROM`, `JOIN`, `INTO`, `UPDATE`, `COLLECTION`, `\d` and the `ON` of
-`CREATE INDEX`, a meta-command at the start of a line, and otherwise a keyword or a field of the rows and descriptions
-shown so far. Ctrl-C stops a running statement; a write that reached Firestore before it may still apply. The history
-is kept in the `fsq` directory of the platform's data directory, such as `~/.local/share/fsq` on Linux.
+* Tab completes a collection after `FROM`, `JOIN`, `INTO`, `UPDATE`, `COLLECTION`, `\d` and the `ON` of
+  `CREATE INDEX`, a meta-command at the start of a line, and otherwise a keyword or a field of the rows and
+  descriptions shown so far;
+* Ctrl-C stops a running statement; a write that reached Firestore before it may still apply;
+* the arguments of `\l`, `\d` and `\gen` are split as a shell splits them, so text that holds spaces or quotes is
+  quoted;
+* the history is kept in the `fsq` directory of the platform's data directory, such as `~/.local/share/fsq` on Linux;
+* a call that waits on Firestore for more than a moment shows a spinner on stderr, unless stderr is not a terminal or
+  the results are JSON written to a pipe.
 
 ## Results
 
-```
-my-project/my-database (enterprise)> SELECT __name__, title, address, tags, published FROM books ORDER BY title;
-╭────────────────┬──────────────────┬─────────────┬───────────┬──────────────────────╮
-│ __name__       ┆ title            ┆ address     ┆ tags      ┆ published            │
-╞════════════════╪══════════════════╪═════════════╪═══════════╪══════════════════════╡
-│ books/children ┆ Children of Dune ┆             ┆           ┆                      │
-│ books/dune     ┆ Dune             ┆ {city, zip} ┆ [3 items] ┆ 2023-11-14T22:13:20Z │
-│ books/messiah  ┆ Dune Messiah     ┆             ┆           ┆                      │
-╰────────────────┴──────────────────┴─────────────┴───────────┴──────────────────────╯
-3 rows · 760 ms
-\x full N shows every field of row N
-```
+A `SELECT` shows its rows as a table, with a footer that gives the rows, the time the statement took and its notes,
+such as `more rows remain`.
+
+### Cells
 
 * the columns are the union of the fields of the rows shown: `__name__` first when the rows have document names,
   then the columns in the order the statement selects them, then the other fields by name;
@@ -175,20 +170,24 @@ my-project/my-database (enterprise)> SELECT __name__, title, address, tags, publ
   database, as `__name__` is;
 * an empty cell is a field the document lacks, and `NULL` is a field that holds null. Firestore keeps the two
   apart, see the [semantics](https://firestore-rust.abdolence.dev/editions/semantics.html) of pipelines;
-* a table wider than the terminal is cut to fit it, the longest cells first, in the middle with `…`; a table that is piped is not cut;
-* a statement that returns no documents prints the footer alone, `0 rows`, and `--format json` an empty array;
+* a table wider than the terminal is cut to fit it, the longest cells first, in the middle with `…`; a table that is
+  piped is not cut;
+* a statement that returns no documents prints the footer alone, `0 rows`, and `--format json` an empty array.
+
+### Paging
+
 * a statement without `LIMIT` shows a page that fits the terminal and asks before the next one. A statement with
   `LIMIT` shows all its rows, and `EXPLAIN` is never paged, since its plan arrives with the last row;
-* the footer shows the rows, the time the statement took and its notes, such as `more rows remain`;
-* in the REPL, the hint `\x full N shows every field of row N` follows the footer when the table cut a cell, showed a
-  map, an array or bytes in summary, or was cut to fit the terminal. A table that showed every value whole has no hint,
-  and neither have a script, piped input or `--format json` and `jsonl`.
+* a result taller than the terminal goes through `$PAGER`, or `less -RFX` when it is unset; an empty `PAGER` turns the
+  pager off;
+* when `LESS` is not set, fsq sets it to `FRX` for the pager alone, as git does, so that `less` keeps the output on
+  screen after `q`, does not page what fits on one screen and shows colours. A `LESS` that is set, even to nothing,
+  is left as it is.
+
+### Expanded and full views
 
 `\x` shows each document as a block, with nested values pretty-printed, and `\x auto` does so only for a table wider
-than the terminal. A result taller than the terminal goes through `$PAGER`, or `less -RFX` when it is
-unset; an empty `PAGER` turns the pager off. When `LESS` is not set, fsq sets it to `FRX` for the pager alone, as git
-does, so that `less` keeps the output on screen after `q`, does not page what fits on one screen and shows colours; a
-`LESS` that is set, even to nothing, is left as it is.
+than the terminal. `\x` without an argument toggles between `off` and `on`.
 
 `\x full` shows every field of every document, in a block with a row for each value: its path, its type and the whole
 value, wrapped inside the value column at the terminal width and never cut. `\x full N` shows row N of the last
@@ -201,13 +200,9 @@ my-project/my-database (enterprise)> \x full 2
  field            type       value
  title            string     Dune
  address.city     string     London
- address.zip      string     N1 9GU
  tags[0]          string     sf
- tags[1]          string     classic
- tags[2]          string     epic
  published        timestamp  2023-11-14T22:13:20Z
  __create_time__  timestamp  2026-11-04T17:51:52.549531Z
- __update_time__  timestamp  2026-11-04T17:51:52.549531Z
 ```
 
 * nested maps and arrays are flattened into paths, `address.city` and `tags[0]`, written as SQL reads them, so that a
@@ -215,16 +210,229 @@ my-project/my-database (enterprise)> \x full 2
 * the types are those `\d` shows, and bytes are shown in base64;
 * the fields come in the order the statement selects them, then by name, and `__create_time__` and `__update_time__`
   close the block when the result carries them;
-* `\x` without an argument toggles between `off` and `on`, and `\x auto` still expands only a table wider than the
-  terminal.
+* in the REPL, the hint `\x full N shows every field of row N` follows the footer when the table cut a cell, showed a
+  map, an array or bytes in summary, or was cut to fit the terminal. A table that showed every value whole has no hint,
+  and neither have a script, piped input or `--format json` and `jsonl`.
 
-A call that waits on Firestore for more than a moment shows a spinner on stderr, unless stderr is not a terminal or
-the results are JSON written to a pipe.
+## Query plans
 
-## Writes and index statements
+`EXPLAIN SELECT ..` shows the plan Firestore chose, without reading any document, and `EXPLAIN ANALYZE SELECT ..`
+also returns the rows and what the run read. The plan is drawn as a tree, followed by a warning for a *table scan*:
+a read of every document of the collection, instead of an index. When Firestore returns no plan, as the emulator
+does, fsq says so.
 
-`INSERT`, `UPDATE` and `DELETE` run as typed, with no confirmation, and print how many documents they modified. The
-index statements run too: fsq runs every statement with `allow_index_statements()` of the firestore crate.
+`\timing on` runs every `SELECT` with `ANALYZE` and adds to the footer the round trip time, the documents read and
+the read units. A *read unit* is how the Enterprise edition bills reads: 4 KiB of the data a read processes.
+
+```
+2 rows · 189 ms · round trip 187 ms · 3 documents read · 1 read unit
+```
+
+## Exploring collections
+
+### Browsing a collection
+
+```sh
+fsq -p my-project -d my-database browse books --filter 'WHERE pages > 100'
+```
+
+`\browse books WHERE pages > 100` in the REPL opens the same browser. It takes the
+whole terminal: the documents of the collection on the left, and the fields of the selected document on the right as a
+tree, where a map or an array opens to show what it holds, at any depth.
+
+The main keys are below, and `?` in the browser lists them all:
+
+| Key | What it does |
+|---|---|
+| ↑ and ↓, `k` and `j` | moves the cursor |
+| →, `l` | opens the map, array or subcollection under the cursor; in the documents, moves to the tree |
+| ←, `h` | closes the map or array under the cursor, or moves up a level |
+| Enter | opens a closed map, array or subcollection; on a leaf or an open map or array, shows the value whole in a popup that Esc closes |
+| Tab | switches between the documents and the tree |
+| `/` | edits the filter; ↑ and ↓ recall the filters that ran, Enter runs it and Esc closes the editor |
+| `f` | opens the filter editor with `WHERE <path> = <value>` for the leaf under the cursor |
+| `y`, `Y` | copies the value under the cursor, or its path, to the clipboard |
+| `r` | reads the documents again |
+| `q` | quits, and in the REPL returns to the prompt; Ctrl-C does the same when nothing is loading and nothing is open |
+| `?` | lists every key in a popup |
+
+In the list of documents, Enter moves to the tree.
+
+**Filter**
+
+* the filter is the end of a `SELECT` after its `FROM`, such as `WHERE`, `ORDER BY`, `LIMIT` and `OFFSET`. fsq runs
+  ``SELECT * FROM `<collection>` `` with the filter after it, and adds `LIMIT 100` when the filter has no `LIMIT` of its
+  own;
+* in the REPL the rest of the line after the collection is the filter, kept as typed, so a string in it needs no extra
+  quoting, and `--filter` is not a flag there. `fsq browse` takes it with `--filter`. A `;` at the end of the filter is
+  dropped;
+* the filter runs as a pipeline, which needs an Enterprise edition database. On a Standard edition database the browser
+  without a filter shows the first 100 documents by ID, and a filter shows the refusal.
+
+**Errors**
+
+* a filter that fails opens in the editor with its error under it, and the documents read before it stay. `/` opens
+  the filter that failed again;
+* the first read without a filter, such as a subcollection opened, and `r` over documents already read leave the editor
+  closed when they fail, and the error shows under the keys at the bottom;
+* Ctrl-G shows any error whole.
+
+**Subcollections**
+
+* the last row of the tree is `subcollections`. Opening it lists the collections under the document, and opening one
+  of them browses it without a filter. Esc returns to the document as it was left.
+
+**Copying**
+
+* `y` copies a string as its text, and any other value as one line of JSON in the tagged encoding `fsq export` writes,
+  such as `{"$timestamp":"2023-11-14T22:13:20Z"}`. `Y` copies the path as SQL reads it, such as `address.city` or
+  `tags[0]`;
+* the copy goes to the clipboard over OSC 52, an escape sequence that asks the terminal to set its clipboard, so it
+  also works over SSH. Some terminals need OSC 52 turned on, and tmux needs `set -g set-clipboard on`.
+
+**Terminal**
+
+* with `NO_COLOR` set, the browser draws without colours;
+* the browser needs a terminal on stdin and stdout, so `\browse` in piped input, or with stdout sent to a pipe or a
+  file, fails with an error. In `fsq -e` and `fsq -f` at a terminal, `\browse` opens the browser, and the script goes
+  on after it quits.
+
+### Describing a collection
+
+```sh
+fsq -p my-project -d my-database describe books --sample 100
+```
+
+`\d books` in the REPL lists the same: each field path of a sample of documents, nested maps included, with the
+types it holds, the share of the sampled documents that have it and an example value. The sample is 500 documents
+unless `--sample` sets another size. fsq asks Firestore for a random sample first. When Firestore refuses it,
+as a Standard edition database does, the sample is the first documents by ID.
+
+```
+my-project/my-database (enterprise)> \d books
+╭──────────────┬──────────────┬─────────┬──────────────────────╮
+│ field        ┆ types        ┆ present ┆ example              │
+╞══════════════╪══════════════╪═════════╪══════════════════════╡
+│ address      ┆ map          ┆ 33.3%   ┆ {city, zip}          │
+│ address.city ┆ string       ┆ 33.3%   ┆ London               │
+│ subtitle     ┆ null, string ┆ 66.7%   ┆ The second book      │
+│ tags         ┆ array        ┆ 33.3%   ┆ [3 items]            │
+│ title        ┆ string       ┆ 100.0%  ┆ Dune                 │
+╰──────────────┴──────────────┴─────────┴──────────────────────╯
+10 field paths · 753 ms · from a sample of 3 documents
+```
+
+### Listing subcollections
+
+`\l --recursive` lists the collections under the root and the subcollections below them, one row each, with the
+columns `collection`, `path`, `depth` and `seen_under`.
+
+Firestore lists the collections under one document at a time, so no call returns every subcollection. fsq reads a
+sample of the documents of each collection and lists the collections under them:
+
+* `--sample K` is the number of documents read per collection path, 20 by default. For `users/*/addresses` that is 20
+  documents in all, taken from the `addresses` collections of the sampled users;
+* `--depth N` is the number of levels listed, 2 by default. Depth 1 is the root collections alone, and depth 3 reads
+  the documents of the collections at depths 1 and 2;
+* the sample is the first documents by ID. It includes a document that does not exist and has subcollections, such
+  as `users/carol` when only `users/carol/orders/o1` was written;
+* `path` shows each document ID on the way as `*`, `depth` is the level, and `seen_under` is how many of the sampled
+  documents of the collection above have this one. A subcollection that only documents outside the sample have is
+  not listed;
+* the footer gives the number of collections, the time and the sample. `--format json` and `jsonl` give the same
+  rows, with `seen_under` as text, and no footer.
+
+Each call takes several seconds on an Enterprise edition database, where a Standard edition database answers in a
+fraction of a second. fsq sends the calls of one level together, so the time grows with the depth, and a listing at
+depth 2 can take tens of seconds. `--depth 1` is the quick listing of the root collections.
+
+## Scripting
+
+```sh
+fsq -p my-project -d my-database sql -e 'SELECT title FROM books LIMIT 10'
+fsq -p my-project -d my-database sql -f report.sql
+fsq -p my-project -d my-database --format jsonl sql -e 'SELECT * FROM books' | jq .title
+echo 'SHOW COLLECTIONS; \d books' | fsq -p my-project -d my-database
+```
+
+* a script is split on `;` and runs one statement at a time, since the firestore crate takes one statement per call.
+  Meta-commands run in scripts too;
+* `-e` and `-f` stop at the first statement that fails and exit with 1. The error names the position of that input in
+  the script and its first line;
+* input piped to fsq runs as the REPL runs typed input: a failed statement is reported and the rest still runs, and
+  fsq exits with 1 when any failed;
+* `--format json` prints each result as a JSON array of objects, and `--format jsonl` as JSON lines, one object per
+  line. The footers are left out, and notices go to stderr;
+* the values use the plain JSON encoding of the firestore crate, which is for display and cannot be read back into
+  the same Firestore types: a timestamp is RFC 3339 text, bytes are base64, and a reference is its path relative to
+  the database. The [JSON conversion](https://firestore-rust.abdolence.dev/json.html) chapter lists every type. Use
+  [`fsq export`](#export-and-import) for output that reads back.
+
+## Export and import
+
+```sh
+fsq -p my-project -d my-database export books -o books.jsonl
+fsq -p my-project -d my-database export users --recursive -o users.jsonl
+fsq -p my-project -d my-database import books.jsonl
+```
+
+### Export
+
+`export` writes one document per line to stdout, or to the file `-o` names. A line is a JSON object with the
+document's `__name__`, relative to the database, and its fields. The values use the tagged JSON encoding of the
+firestore crate, which reads back to the same Firestore types: a timestamp is `{"$timestamp": "2023-11-14T22:13:20Z"}`,
+bytes are `{"$bytes": ".."}`, a reference is `{"$ref": "books/dune"}` and an integer beyond 2^53 is `{"$int": ".."}`.
+The [JSON conversion](https://firestore-rust.abdolence.dev/json.html) chapter of the crate lists every type.
+
+| Option | What it does |
+|---|---|
+| `<collection>` | exports a collection, by path for a subcollection such as `users/alice/orders` |
+| `--group` | exports every collection with that ID, at any depth; the argument is a collection ID, and `--recursive` does not combine with it |
+| `--recursive` | adds the subcollections of every document, each name with its full relative path; one extra request per document |
+| `--sql '<SELECT>'` | exports the rows of a `SELECT` instead of a collection, on an Enterprise edition database; a row needs its `__name__` to be imported |
+| `--with-metadata` | adds `__create_time__` and `__update_time__` to every document; `import` ignores both |
+| `--plain` | writes the plain encoding, which is for reading and cannot be imported |
+| `-o`, `--output` | writes to a file instead of stdout |
+
+`--recursive` also lists the subcollections of a document that does not exist and has only subcollections, and writes
+no line for that document. Unless the documents go to a terminal, a spinner on stderr shows how many documents were
+written, and a line on stderr states the total.
+
+### Import
+
+`import` reads a file, or stdin for `-`, and writes the documents in batches through the batch writer of the
+firestore crate. A batch holds at most 500 writes and about 9 MiB, and it ends before a document that it already
+holds, since Firestore refuses a request that writes one document twice. A bar shows the position in the file, or a
+spinner when the input is stdin.
+
+| Option | What it does |
+|---|---|
+| `--on-conflict skip` | leaves a document that exists as it is and counts it as skipped |
+| `--on-conflict fail` | reports a document that exists as a failure |
+| `--merge` | writes the top-level fields a line lists, and keeps the other fields of an existing document; it cannot be combined with `--on-conflict` |
+| `--keep-going` | goes on after a failure and reports every one |
+
+Without `--on-conflict` or `--merge`, import creates a document, or replaces it when it exists, so that an export
+imported again gives the same documents.
+
+Failures:
+
+* a line that is not valid JSON, or not a document in the tagged encoding, fails with its line number and the code of
+  the firestore crate, such as `JSON_UNKNOWN_WRAPPER`. A document that Firestore refuses fails with its line number
+  and the status code;
+* a batch is not atomic: each write of it is counted as written, skipped or failed, so that the other writes of a
+  batch with a failure are applied;
+* a request that Firestore refuses as a whole fails every write of it, and the failure names the first and the last
+  line of the batch;
+* without `--keep-going` the import stops after the request that holds the first failure, and reports every failed
+  write of that request. With it the import goes on after a line, a write or a request fails;
+* fsq exits with 1 when any document failed. The last line on stderr counts the documents written, skipped and failed.
+
+## Indexes
+
+### Index statements
+
+`CREATE INDEX`, `DROP INDEX`, `ALTER COLLECTION` and `SHOW INDEXES` run in the REPL and in scripts.
 
 `CREATE INDEX` and `ALTER COLLECTION` start a build that takes minutes even for an empty collection. fsq waits for it
 with a spinner and the elapsed time. Ctrl-C stops the wait, not the build, and `SHOW INDEXES FROM <collection>`
@@ -238,12 +446,10 @@ DROP INDEX IF EXISTS `CICAgJim14AK`;
 
 The statements and their options are in [Index statements](https://firestore-rust.abdolence.dev/sql/indexes.html).
 
-## Indexes from a file
+### Indexes from a file
 
-`fsq index` works on the `firestore.indexes.json` format of the Firebase CLI: the `indexes` and the
-`fieldOverrides` of each collection group. Planning and syncing use the index management of the
-firestore crate, which owns one collection group at a time, so fsq plans and syncs the groups of a file
-one after another.
+`fsq index` works on the `firestore.indexes.json` format of the Firebase CLI: the `indexes` and the `fieldOverrides`
+of each collection group. It plans and syncs the collection groups of a file one after another.
 
 ```sh
 fsq -p my-project index export -o firestore.indexes.json
@@ -254,28 +460,32 @@ fsq -p my-project index create books genre:asc rating:desc
 fsq -p my-project index delete books genre:asc rating:desc --if-exists
 ```
 
-* `plan <file> [--prune]` prints one row per index, field override and TTL field that the file declares or that is
-  live: `create`, `update`, `enable`, `delete`, `revert`, `disable`, `unchanged`, `pending`, `reverting`,
-  `needs repair`, `undeclared`, `withheld` and `unrecognised`. An index, field override or TTL field that already
-  matches the file shows as `unchanged`, and a field override that Firestore is still reverting shows as `reverting`.
-  It writes nothing;
-* `sync <file> [--prune] [--no-wait]` applies the plan, with a spinner for each collection group while its builds
-  run, and prints the same table. `--no-wait` returns once the last change is requested. Ctrl-C stops the wait, not
-  the builds, and `fsq index list` shows their state afterwards;
-* `list [--group <collection group>]` lists the live indexes and field overrides, as `SHOW INDEXES` does;
-* `export [-o <file>]` writes the live indexes, field overrides and TTL fields as an indexes file, to stdout
-  without `-o`. Items the firestore crate cannot represent are named on stderr and left out;
-* `create <collection group> <field>:<mode>... [--scope collection|group] [--if-not-exists]` creates one composite
-  index. The mode is `asc`, `desc` or `contains`;
-* `delete <index id> [--if-exists]` or `delete <collection group> <field>:<mode>... [--scope ..] [--if-exists]`
-  deletes one index, named by its ID or by its definition.
+| Command | What it does |
+|---|---|
+| `plan <file> [--prune]` | prints what the file would change and writes nothing |
+| `sync <file> [--prune] [--no-wait]` | applies the plan, with a spinner for each collection group while its builds run, and prints the same table |
+| `list [--group <collection group>]` | lists the live indexes and field overrides, as `SHOW INDEXES` does |
+| `export [-o <file>]` | writes the live indexes, field overrides and time-to-live (TTL) fields as an indexes file, to stdout without `-o` |
+| `create <collection group> <field>:<mode>... [--scope collection\|group] [--if-not-exists]` | creates one composite index; the mode is `asc`, `desc` or `contains` |
+| `delete <index id> [--if-exists]` | deletes one index by its ID |
+| `delete <collection group> <field>:<mode>... [--scope ..] [--if-exists]` | deletes one index by its definition |
+
+* `plan` prints one row per index, field override and TTL field that the file declares or that is live, with one
+  state: `create`, `update`, `enable`, `delete`, `revert`, `disable`, `unchanged`, `pending`, `reverting`,
+  `needs repair`, `undeclared`, `withheld` or `unrecognised`. An item that already matches the file shows as
+  `unchanged`, and a field override that Firestore is still reverting shows as `reverting`;
+* `--no-wait` on `sync` returns once the last change is requested. Ctrl-C stops the wait, not the builds, and
+  `fsq index list` shows their state afterwards;
+* `export` names on stderr the items the firestore crate cannot represent, such as an index with `multikey`, and
+  leaves them out of the file.
 
 Without `--prune`, what the database has and the file does not declare is shown as `undeclared` and left alone,
 in every collection group of the database, including the ones the file does not name. `--prune` deletes
 undeclared indexes, reverts undeclared field overrides to automatic indexing and disables undeclared TTL fields.
 A pruning sync deletes only after the indexes it created have finished building, even with `--no-wait`.
 
-### The file
+<details>
+<summary>The indexes file</summary>
 
 The file is the format of `firebase firestore:indexes` and `firebase deploy`, and `fsq index export` writes what
 `firebase firestore:indexes` writes: `indexes`, with `collectionGroup`, `queryScope`, `fields` and `density`, and
@@ -321,127 +531,9 @@ The Firebase CLI does not read the `fsq` keys. They hold what the Firebase forma
 ```
 
 A key that neither the Firebase format nor `fsq` defines is refused with its path, so that no setting is dropped
-without notice. A key set to `null` counts as absent. `export` lists on stderr the indexes and field overrides that
-the firestore crate cannot represent, such as an index with `multikey`, and leaves them out of the file.
+without notice. A key set to `null` counts as absent.
 
-## Query plans
-
-`EXPLAIN SELECT ..` shows the plan Firestore chose, without reading any document, and `EXPLAIN ANALYZE SELECT ..`
-also returns the rows and what the run read. The plan is drawn as a tree, followed by a warning for a *table scan*:
-a read of every document of the collection, instead of an index. When Firestore returns no plan, as the emulator
-does, fsq says so.
-
-`\timing on` runs every `SELECT` with `ANALYZE` and adds to the footer the round trip time, the documents read and
-the read units. A *read unit* is how the Enterprise edition bills reads: 4 KiB of the data a read processes.
-
-```
-2 rows · 189 ms · round trip 187 ms · 3 documents read · 1 read unit
-```
-
-## Describing a collection
-
-```sh
-fsq -p my-project -d my-database describe books --sample 100
-```
-
-`\d books` in the REPL lists the same: each field path of a sample of documents, nested maps included, with the
-types it holds, the share of the sampled documents that have it and an example value. The sample is 500 documents
-unless `--sample` sets another size. fsq asks Firestore for a random sample first. When Firestore refuses it, as a
-Standard edition database does, the sample is the first documents by ID.
-
-```
-my-project/my-database (enterprise)> \d books
-╭──────────────┬──────────────┬─────────┬──────────────────────╮
-│ field        ┆ types        ┆ present ┆ example              │
-╞══════════════╪══════════════╪═════════╪══════════════════════╡
-│ address      ┆ map          ┆ 33.3%   ┆ {city, zip}          │
-│ address.city ┆ string       ┆ 33.3%   ┆ London               │
-│ address.zip  ┆ string       ┆ 33.3%   ┆ N1 9GU               │
-│ genre        ┆ string       ┆ 66.7%   ┆ sf                   │
-│ pages        ┆ integer      ┆ 33.3%   ┆ 412                  │
-│ published    ┆ timestamp    ┆ 33.3%   ┆ 2023-11-14T22:13:20Z │
-│ rating       ┆ double       ┆ 100.0%  ┆ 4.5                  │
-│ subtitle     ┆ null, string ┆ 66.7%   ┆ The second book      │
-│ tags         ┆ array        ┆ 33.3%   ┆ [3 items]            │
-│ title        ┆ string       ┆ 100.0%  ┆ Dune                 │
-╰──────────────┴──────────────┴─────────┴──────────────────────╯
-10 field paths · 753 ms · from a sample of 3 documents
-```
-
-## Browsing a collection
-
-```sh
-fsq -p my-project -d my-database browse books --filter 'WHERE pages > 100'
-```
-
-`\browse books WHERE pages > 100` in the REPL opens the same browser. It takes the whole terminal: the documents of the
-collection on the left, and the fields of the selected document on the right as a tree, where a map or an array opens
-to show what it holds, at any depth.
-
-![fsq-browse](media/fsq-browse.webp)
-
-```
-books  WHERE pages > 100 LIMIT 100
-┌ 2/2 ─────┐┌ dune ────────────────────────────────────────────────────────────┐
-│ draft    ││ ▾ address    map                                                 │
-│▌dune     ││▌    city     string      London                                  │
-│          ││     zip      string      N1 9GU                                  │
-│          ││   author     reference   authors/herbert                         │
-│          ││   blurb      string      A desert planet, a spice that extends l…│
-│          ││   cover      bytes       4 bytes                                 │
-│          ││   in_print   boolean     true                                    │
-│          ││   location   geopoint    (51.5, -0.12)                           │
-│          ││   pages      integer     412                                     │
-│          ││   published  timestamp   2023-11-14T22:13:20Z                    │
-│          ││   rating     double      4.5                                     │
-│          ││   subtitle               NULL                                    │
-│          ││ ▸ tags       array       [2 items]                               │
-│          ││   title      string      Dune                                    │
-│          ││                                                                  │
-│          ││ ▸ subcollections                                                 │
-└──────────┘└ address.city ────────────────────────────────────────────────────┘
-↑↓ move · → open · Tab pane · / filter · f where · y copy        ? help · q quit
-```
-
-The main keys are below, and `?` in the browser lists them all:
-
-| Key | What it does |
-|---|---|
-| ↑ and ↓, `k` and `j` | moves the cursor |
-| →, `l` | opens the map, array or subcollection under the cursor; in the documents, moves to the tree |
-| Enter | on a leaf or an open map or array, shows the value whole in a popup, a box over the panes that Esc closes; on a closed map, array or subcollection, opens it, and in the documents, moves to the tree |
-| ←, `h` | closes the map or array under the cursor, or moves up a level |
-| Tab | switches between the documents and the tree |
-| `/` | edits the filter; ↑ and ↓ recall the filters that ran, Enter runs it and Esc closes the editor |
-| `f` | opens the filter editor with `WHERE <path> = <value>` for the leaf under the cursor |
-| `y`, `Y` | copies the value under the cursor, or its path, to the clipboard |
-| `r` | reads the documents again |
-| `q` | quits, and in the REPL returns to the prompt; Ctrl-C does the same when nothing is loading and nothing is open |
-| `?` | lists every key in a popup |
-
-* the filter is the end of a `SELECT` after its `FROM`, such as `WHERE`, `ORDER BY`, `LIMIT` and `OFFSET`. fsq runs
-  ``SELECT * FROM `<collection>` `` with the filter after it, and adds `LIMIT 100` when the filter has no `LIMIT` of its
-  own;
-* in the REPL the rest of the line after the collection is the filter, kept as typed, so a string in it needs no extra
-  quoting, and `--filter` is not a flag there. `fsq browse` takes it with `--filter`. A `;` at the end of the filter is
-  dropped;
-* a filter that fails opens in the editor with its error under it, and the documents read before it stay. The first
-  read without a filter, such as a subcollection opened, and `r` over documents already read leave the editor closed
-  when they fail, and the error shows under the keys at the bottom. Ctrl-G shows any error whole, and `/` opens the
-  filter that failed again;
-* the last row of the tree is `subcollections`. Opening it lists the collections under the document, and opening one
-  of them browses it without a filter. Esc returns to the document as it was left;
-* `y` copies a string as its text, and any other value as one line of JSON in the tagged encoding `fsq export` writes,
-  such as `{"$timestamp":"2023-11-14T22:13:20Z"}`. `Y` copies the path as SQL reads it, such as `address.city` or
-  `tags[0]`. The copy goes to the clipboard over OSC 52, an escape sequence that asks the terminal to set its clipboard,
-  so it also works over SSH. Some terminals need OSC 52 turned on, and tmux needs `set -g set-clipboard on`;
-* with `NO_COLOR` set, the browser draws without colours;
-* the browser needs a terminal on stdin and stdout, so `\browse` in piped input, or with stdout sent to a pipe or a
-  file, fails with an error. In `fsq -e` and `fsq -f` at a terminal, `\browse` opens the browser, and the script goes
-  on after it quits.
-
-The filter runs as a pipeline, which needs an Enterprise edition database. On a Standard edition database, which
-refuses pipelines, the browser without a filter shows the first 100 documents by ID, and a filter shows the refusal.
+</details>
 
 ## Fluent Rust code
 
@@ -458,132 +550,27 @@ returns and generates nothing itself. `\gen '<SELECT>'` in the REPL does the sam
 
 | Option | What it does |
 |---|---|
-| `--param name=value` | binds `@name` to a JSON literal, which gives the function argument its type: `4` is an integer, `4.0` a double, `true` a boolean and `"text"` a string. In a shell the quotes of a string need quoting too, as in `--param 'genre="sf"'`. A `?` parameter cannot be bound |
-| `--sample N` | runs the `SELECT` for at most N rows, 100 by default, and types the fields of the row struct from them. The statement runs as a read, with a limit of N rows, and the output does not show that limit |
+| `--param name=value` | binds `@name` to a JSON literal, which gives the function argument its type: `4` is an integer, `4.0` a double, `true` a boolean and `"text"` a string; a `?` parameter cannot be bound |
+| `--sample N` | runs the `SELECT` as a read of at most N rows, 100 by default, and types the fields of the row struct from them; the output does not show that limit |
 | `--offline` | does not run the `SELECT` and needs no connection, so every field is typed as unknown JSON; it does not combine with `--sample` |
+
+`\gen` takes the same options as `codegen`: `\gen ['SELECT'] [--param NAME=VALUE] [--sample N] [--offline]`. Its
+`SELECT` is one argument, and a JSON string for `--param` is quoted twice, once for the JSON and once for the shell:
+
+```
+\gen 'SELECT title FROM books WHERE genre = @genre' --param 'genre="science fiction"'
+```
+
+The same quoting applies to `--param` on the command line. A `SELECT` that holds single quotes goes in double quotes.
 
 A statement that is not a `SELECT`, and a `SELECT` with a construct the crate cannot show, fails with the crate's
 error that names the construct. The [fluent code](https://firestore-rust.abdolence.dev/sql/codegen.html) chapter of
 the crate lists what the output covers and how it types the fields. The sample is read with a `SELECT`, so it needs
 an Enterprise edition database, and `--offline` works on any edition.
 
-## Listing subcollections
-
-`\l --recursive` lists the collections under the root and the subcollections below them:
-
-```
-my-project/my-database (enterprise)> \l --recursive
-╭───────────────────────────────────┬───────────────────────────────────────────────┬───────┬─────────────────────────────────────╮
-│ collection                        ┆ path                                          ┆ depth ┆ seen_under                          │
-╞═══════════════════════════════════╪═══════════════════════════════════════════════╪═══════╪═════════════════════════════════════╡
-│ pipeline-books                    ┆ pipeline-books                                ┆ 1     ┆                                     │
-│ pipeline-bulk                     ┆ pipeline-bulk                                 ┆ 1     ┆                                     │
-│ pipeline-cache-edge               ┆ pipeline-cache-edge                           ┆ 1     ┆                                     │
-│ pipeline-cache-sessions           ┆ pipeline-cache-sessions                       ┆ 1     ┆                                     │
-│ pipeline-restaurants              ┆ pipeline-restaurants                          ┆ 1     ┆                                     │
-│ sql-tests-on-conflict-star-fluent ┆ sql-tests-on-conflict-star-fluent             ┆ 1     ┆                                     │
-│ pipeline-cache-children           ┆ pipeline-cache-edge/*/pipeline-cache-children ┆ 2     ┆ 1 of 20 sampled pipeline-cache-edge │
-│ reviews                           ┆ pipeline-restaurants/*/reviews                ┆ 2     ┆ 3 of 9 sampled pipeline-restaurants │
-╰───────────────────────────────────┴───────────────────────────────────────────────┴───────┴─────────────────────────────────────╯
-8 collections · 41.34 s · sampled 20 docs per collection
-```
-
-Firestore lists the collections under one document at a time, so no call returns every subcollection.
-Each call takes several seconds on an Enterprise edition database, where a Standard edition database answers in a
-fraction of a second. fsq sends the calls of one level together, so the time grows with the depth: the listing above,
-6 root collections at depth 2, took 41 s, and depth 1 alone took 6 s. `--depth 1` is the quick listing of the root
-collections.
-
-`\l --recursive` reads a sample of the documents of each collection and lists the collections under them:
-
-* `--sample K` is the number of documents read per collection path, 20 by default. For `users/*/addresses` that is 20
-  documents in all, taken from the `addresses` collections of the sampled users;
-* `--depth N` is the number of levels listed, 2 by default. Depth 1 is the root collections alone, and depth 3 reads
-  the documents of the collections at depths 1 and 2;
-* the sample is the first documents by ID. It includes a document that does not exist and has subcollections, such
-  as `users/carol` when only `users/carol/orders/o1` was written;
-* `path` shows each document ID on the way as `*`, `depth` is the level, and `seen_under` is how many of the sampled
-  documents of the collection above have this one. A subcollection that only documents outside the sample have is
-  not listed;
-* the footer gives the number of collections, the time and the sample. `--format json` and `jsonl` give the same
-  rows, with `seen_under` as text, and no footer.
-
-## Export and import
-
-```sh
-fsq -p my-project -d my-database export books -o books.jsonl
-fsq -p my-project -d my-database export users --recursive -o users.jsonl
-fsq -p my-project -d my-database import books.jsonl
-```
-
-`export` writes one document per line to stdout, or to the file `-o` names. A line is a JSON object with the
-document's `__name__`, relative to the database, and its fields. The values use the tagged JSON encoding of the
-firestore crate, which reads back to the same Firestore types: a timestamp is `{"$timestamp": "2023-11-14T22:13:20Z"}`,
-bytes are `{"$bytes": ".."}`, a reference is `{"$ref": "books/dune"}` and an integer beyond 2^53 is `{"$int": ".."}`.
-The [JSON conversion](https://firestore-rust.abdolence.dev/json.html) chapter of the crate lists every type.
-
-| Option | What it does |
-|---|---|
-| `<collection>` | exports a collection, by path for a subcollection such as `users/alice/orders` |
-| `--group` | exports every collection with that ID, at any depth; the argument is a collection ID, and `--recursive` does not combine with it |
-| `--recursive` | adds the subcollections of every document, including those of a document that does not exist and has only subcollections; each name holds its full relative path. It lists the subcollections with one extra request per document, and writes no document that does not exist |
-| `--sql '<SELECT>'` | exports the rows of a `SELECT` instead of a collection, on an Enterprise edition database. A row needs its `__name__` to be imported |
-| `--with-metadata` | adds `__create_time__` and `__update_time__` to every document. `import` ignores both |
-| `--plain` | writes the plain encoding, which is for reading and cannot be imported |
-| `-o`, `--output` | writes to a file instead of stdout |
-
-Listing a collection works on both editions. Unless the documents go to a terminal, a spinner on stderr shows how
-many documents were written, and a line on stderr states the total.
-
-`import` reads a file, or stdin for `-`, and writes the documents in batches through the batch writer of the
-firestore crate. A batch holds at most 500 writes and about 9 MiB, and it ends before a document that it already
-holds, since Firestore refuses a request that writes one document twice. A bar shows the position in the file, or a
-spinner when the input is stdin.
-
-| Option | What it does |
-|---|---|
-| `--on-conflict skip` | leaves a document that exists as it is and counts it as skipped |
-| `--on-conflict fail` | reports a document that exists as a failure |
-| `--merge` | writes the top-level fields a line lists, and keeps the other fields of an existing document; it cannot be combined with `--on-conflict` |
-| `--keep-going` | goes on after a failure and reports every one |
-
-Without `--on-conflict` or `--merge`, import creates a document, or replaces it when it exists, so that an export
-imported again gives the same documents.
-
-A line that is not valid JSON, or not a document in the tagged encoding, fails with its line number and the code of
-the firestore crate, such as `JSON_UNKNOWN_WRAPPER`. A document that Firestore refuses fails with its line number and
-the status code. A batch is not atomic: each write of it is counted as written, skipped or failed, so that the other
-writes of a batch with a failure are applied. A request that Firestore refuses as a whole fails every write of it,
-and the failure names the first and the last line of the batch. Without `--keep-going` the import stops after the
-request that holds the first failure, and reports every failed write of that request. With it the import goes on
-after a line, a write or a request fails. fsq exits with 1 when any document
-failed. The last line on stderr counts the documents written, skipped and failed.
-
-## Scripting
-
-```sh
-fsq -p my-project -d my-database sql -e 'SELECT title FROM books LIMIT 10'
-fsq -p my-project -d my-database sql -f report.sql
-fsq -p my-project -d my-database --format jsonl sql -e 'SELECT * FROM books' | jq .title
-echo 'SHOW COLLECTIONS; \d books' | fsq -p my-project -d my-database
-```
-
-* a script is split on `;` and runs one statement at a time, since the firestore crate takes one statement per call.
-  Meta-commands run in scripts too;
-* `-e` and `-f` stop at the first statement that fails and exit with 1. The error names the position of that input in
-  the script and its first line;
-* input piped to fsq runs as the REPL runs typed input: a failed statement is reported and the rest still runs, and
-  fsq exits with 1 when any failed;
-* `--format json` prints each result as a JSON array of objects, and `--format jsonl` as JSON lines, one object per
-  line. The values use the plain JSON encoding of the firestore crate, which is for display and cannot be read back
-  into the same Firestore types: a timestamp is RFC 3339 text, bytes are base64, a reference is its path relative to
-  the database, a geo point is an object with `latitude` and `longitude`, a vector is an array of numbers, and `NaN`
-  and the infinities are the strings `"NaN"`, `"Infinity"` and `"-Infinity"`. The footers are left out, and notices go
-  to stderr.
-
 ## Licence
 
-Apache Software License (ASL)
+Apache-2.0, see [LICENSE](LICENSE).
 
 ## Author
 
