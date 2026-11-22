@@ -8,7 +8,7 @@ collection browser, and a scripting mode with JSON output. It is built on the
 query format of the Enterprise edition. The SQL dialect is documented in the
 [firestore book](https://firestore-rust.abdolence.dev).
 
-![fsq REPL: listing collections, SELECT, UPDATE, describing and browsing a collection, generating Rust code](media/fsq-browse.webp)
+![fsq REPL: SELECT, UPDATE, describing a collection, listing subcollections, browsing and generating Rust code](media/fsq-demo.webp)
 
 * **SQL REPL:** highlighting, completion of collections and fields, statements across several lines and a history,
   see [The REPL](#the-repl);
@@ -31,64 +31,32 @@ query format of the Enterprise edition. The SQL dialect is documented in the
 
 ## Installation
 
-### Install script
-
-On macOS, Linux and FreeBSD:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.sh | sh
-```
-
-On Windows (PowerShell):
-
-```powershell
-irm https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.ps1 | iex
-```
-
-The scripts pick the archive for your operating system and architecture from the latest release and verify it against
-the SHA-256 digest GitHub records for it. Nothing is installed if the digest is missing or does not match, or if the
-downloaded binary does not run on your system. Running a script again upgrades fsq in place.
-
-* `FSQ_INSTALL_DIR`: the install directory. Default is `~/.local/bin` on macOS, Linux and FreeBSD
-  and `%LOCALAPPDATA%\Programs\fsq` on Windows;
-* `FSQ_VERSION`: the release tag to install, such as `v0.2.0`. Default is the latest release.
-
-The Windows script adds the install directory to your user `PATH`; the shell script prints the `export` line to add if
-the directory is not on your `PATH`.
-
-<details>
-<summary>Install a specific version or into a custom directory</summary>
-
-On macOS, Linux and FreeBSD:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.sh | env FSQ_VERSION=v0.2.0 sh
-curl -fsSL https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.sh | env FSQ_INSTALL_DIR=$HOME/bin sh
-```
-
-On Windows:
-
-```powershell
-& { try { $env:FSQ_VERSION = 'v0.2.0'; irm https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.ps1 | iex } finally { Remove-Item Env:FSQ_VERSION } }
-& { try { $env:FSQ_INSTALL_DIR = 'C:\Tools\fsq'; irm https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.ps1 | iex } finally { Remove-Item Env:FSQ_INSTALL_DIR } }
-```
-
-</details>
-
 ### Cargo
 
 ```sh
 cargo install firestore-cli --locked
 ```
 
-The crate is `firestore-cli` and the binary it installs is `fsq`.
+The crate is `firestore-cli`, and the binary it installs is `fsq`.
 
 ### Binary releases
 
-Download the latest release from [the GitHub releases](https://github.com/abdolence/firestore-cli-rs/releases).
+Archives for macOS, Linux, FreeBSD and Windows are on [the GitHub releases](https://github.com/abdolence/firestore-cli-rs/releases).
+The Linux x86_64 and aarch64 archives need glibc, so on musl systems such as Alpine use Cargo.
 
-The Linux x86_64 and aarch64 archives are built for glibc, so on musl systems such as Alpine use [Cargo](#cargo). The
-Linux arm archive is static (musl) and needs no glibc.
+### Install script
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/abdolence/firestore-cli-rs/master/install.ps1 | iex
+```
+
+The script downloads the latest release for your system, checks its SHA-256 digest and installs `fsq` into
+`~/.local/bin`, or `%LOCALAPPDATA%\Programs\fsq` on Windows. Run it again to upgrade. `FSQ_VERSION` (such as
+`v0.2.0`) and `FSQ_INSTALL_DIR` override the release and the directory.
 
 ## Connecting
 
@@ -200,9 +168,13 @@ my-project/my-database (enterprise)> \x full 2
  field            type       value
  title            string     Dune
  address.city     string     London
+ address.zip      string     N1 9GU
  tags[0]          string     sf
+ tags[1]          string     classic
+ tags[2]          string     epic
  published        timestamp  2023-11-14T22:13:20Z
  __create_time__  timestamp  2026-11-04T17:51:52.549531Z
+ __update_time__  timestamp  2026-11-04T17:51:52.549531Z
 ```
 
 * nested maps and arrays are flattened into paths, `address.city` and `tags[0]`, written as SQL reads them, so that a
@@ -247,7 +219,7 @@ The main keys are below, and `?` in the browser lists them all:
 | ↑ and ↓, `k` and `j` | moves the cursor |
 | →, `l` | opens the map, array or subcollection under the cursor; in the documents, moves to the tree |
 | ←, `h` | closes the map or array under the cursor, or moves up a level |
-| Enter | opens a closed map, array or subcollection; on a leaf or an open map or array, shows the value whole in a popup that Esc closes |
+| Enter | opens a closed map, array or subcollection, and in the documents moves to the tree; on a leaf or an open map or array, shows the value whole in a popup that Esc closes |
 | Tab | switches between the documents and the tree |
 | `/` | edits the filter; ↑ and ↓ recall the filters that ran, Enter runs it and Esc closes the editor |
 | `f` | opens the filter editor with `WHERE <path> = <value>` for the leaf under the cursor |
@@ -255,8 +227,6 @@ The main keys are below, and `?` in the browser lists them all:
 | `r` | reads the documents again |
 | `q` | quits, and in the REPL returns to the prompt; Ctrl-C does the same when nothing is loading and nothing is open |
 | `?` | lists every key in a popup |
-
-In the list of documents, Enter moves to the tree.
 
 **Filter**
 
@@ -307,20 +277,6 @@ fsq -p my-project -d my-database describe books --sample 100
 types it holds, the share of the sampled documents that have it and an example value. The sample is 500 documents
 unless `--sample` sets another size. fsq asks Firestore for a random sample first. When Firestore refuses it,
 as a Standard edition database does, the sample is the first documents by ID.
-
-```
-my-project/my-database (enterprise)> \d books
-╭──────────────┬──────────────┬─────────┬──────────────────────╮
-│ field        ┆ types        ┆ present ┆ example              │
-╞══════════════╪══════════════╪═════════╪══════════════════════╡
-│ address      ┆ map          ┆ 33.3%   ┆ {city, zip}          │
-│ address.city ┆ string       ┆ 33.3%   ┆ London               │
-│ subtitle     ┆ null, string ┆ 66.7%   ┆ The second book      │
-│ tags         ┆ array        ┆ 33.3%   ┆ [3 items]            │
-│ title        ┆ string       ┆ 100.0%  ┆ Dune                 │
-╰──────────────┴──────────────┴─────────┴──────────────────────╯
-10 field paths · 753 ms · from a sample of 3 documents
-```
 
 ### Listing subcollections
 
