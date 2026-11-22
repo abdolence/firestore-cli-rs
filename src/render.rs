@@ -23,20 +23,23 @@ pub use index_changes::*;
 pub use output::*;
 pub use plan::*;
 pub use spinner::*;
-pub use value::type_name;
+pub use value::{sorted_keys, type_name};
 
 use clap::ValueEnum;
 use console::Style;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 
-/// `bar`, drawn with `template` and redrawn every 120 ms until it is finished.
+/// How often a spinner or a progress bar is redrawn while it runs.
+pub const ANIMATION_TICK: Duration = Duration::from_millis(120);
+
+/// `bar`, drawn with `template` and redrawn every [`ANIMATION_TICK`] until it is finished.
 pub fn animated(bar: ProgressBar, template: &str) -> ProgressBar {
     bar.set_style(
         ProgressStyle::with_template(template)
             .expect("the template is a literal with keys indicatif knows"),
     );
-    bar.enable_steady_tick(Duration::from_millis(120));
+    bar.enable_steady_tick(ANIMATION_TICK);
     bar
 }
 
@@ -112,23 +115,22 @@ pub struct Theme {
 }
 
 impl Theme {
-    pub fn new(colour: bool) -> Self {
-        let style = |style: Style| style.force_styling(colour);
+    pub const fn new(colour: bool) -> Self {
         Self {
-            null: style(Style::new().dim().italic()),
-            boolean: style(Style::new().yellow()),
-            number: style(Style::new().cyan()),
-            string: style(Style::new().green()),
-            timestamp: style(Style::new().magenta()),
-            reference: style(Style::new().blue().underlined()),
-            nested: style(Style::new().dim()),
-            key: style(Style::new().bold()),
-            header: style(Style::new().bold()),
-            muted: style(Style::new().dim()),
-            warning: style(Style::new().yellow().bold()),
-            error: style(Style::new().red().bold()),
-            success: style(Style::new().green().bold()),
-            plan_node: style(Style::new().cyan().bold()),
+            null: Style::new().dim().italic().force_styling(colour),
+            boolean: Style::new().yellow().force_styling(colour),
+            number: Style::new().cyan().force_styling(colour),
+            string: Style::new().green().force_styling(colour),
+            timestamp: Style::new().magenta().force_styling(colour),
+            reference: Style::new().blue().underlined().force_styling(colour),
+            nested: Style::new().dim().force_styling(colour),
+            key: Style::new().bold().force_styling(colour),
+            header: Style::new().bold().force_styling(colour),
+            muted: Style::new().dim().force_styling(colour),
+            warning: Style::new().yellow().bold().force_styling(colour),
+            error: Style::new().red().bold().force_styling(colour),
+            success: Style::new().green().bold().force_styling(colour),
+            plan_node: Style::new().cyan().bold().force_styling(colour),
         }
     }
 }

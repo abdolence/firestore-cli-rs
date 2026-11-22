@@ -43,6 +43,17 @@ impl View<'_> {
         }
     }
 
+    /// A leaf of a tree on one line, a string uncut, for a pane that cuts at its own edge. Maps and
+    /// arrays stay in their compact form.
+    pub fn leaf_value(&self, value: &Value) -> String {
+        match &value.value_type {
+            Some(ValueType::StringValue(text)) => {
+                self.theme.string.apply_to(single_line(text)).to_string()
+            }
+            _ => self.compact_value(value),
+        }
+    }
+
     pub fn pretty_value(&self, value: &Value) -> String {
         let mut out = String::new();
         match &value.value_type {
@@ -173,7 +184,7 @@ impl Display for TimestampText<'_> {
     }
 }
 
-pub(super) fn sorted_keys(fields: &HashMap<String, Value>) -> Vec<&String> {
+pub fn sorted_keys(fields: &HashMap<String, Value>) -> Vec<&String> {
     let mut keys: Vec<&String> = fields.keys().collect();
     keys.sort();
     keys

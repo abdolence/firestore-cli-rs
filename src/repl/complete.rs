@@ -32,8 +32,8 @@ impl SqlCompleter {
         let Ok(vocabulary) = self.vocabulary.lock() else {
             return Vec::new();
         };
-        // `\d` takes the ID as it is, and no SQL quoting.
-        if previous == "\\D" {
+        // `\d` and `\browse` take the ID as it is, and no SQL quoting.
+        if matches!(previous.as_str(), "\\D" | "\\BROWSE") {
             return vocabulary.collections.iter().cloned().collect();
         }
         // After the ON of a join a field belongs; after that of CREATE INDEX a collection does.
@@ -119,6 +119,13 @@ mod tests {
         assert_eq!(completions("\\ti"), vec!["\\timing"]);
         assert_eq!(completions("\\d bo"), vec!["books"]);
         assert_eq!(completions("\\d ord"), vec!["order-lines"]);
+    }
+
+    #[test]
+    fn browse_completes_the_collection_id_as_it_is() {
+        assert_eq!(completions("\\browse bo"), vec!["books"]);
+        assert_eq!(completions("\\browse ord"), vec!["order-lines"]);
+        assert_eq!(completions("\\browse books ORD"), vec!["ORDER"]);
     }
 
     #[test]
